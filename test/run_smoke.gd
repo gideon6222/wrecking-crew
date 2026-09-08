@@ -115,9 +115,45 @@ func _initialize() -> void:
 	_t.ok(main._readout.text == SimUtil.fmt(main.sim.rubble), "the rubble readout disagrees with the run")
 	_t.gt(main._meter_fill.size.x, 0.0, "the power meter never filled despite rubble being earned")
 
+	_check_the_controls_are_anchored(main)
 	_check_the_street_can_be_left(main)
 
 	_finish()
+
+
+## The controls must be ANCHORED to the viewport, never placed at a literal
+## coordinate.
+##
+## This is a structural assertion rather than a behavioural one, because the
+## bug it guards against is invisible at the size the tests run. The project
+## stretches with `aspect = "expand"`, which keeps the base WIDTH and extends
+## the HEIGHT - so on a 19.5:9 phone the canvas is about 1080x2340 while the
+## base is 1080x1920. Two thumb pads laid out against the literal 1920 drew
+## hundreds of pixels above where they belonged, and the report was "the icons
+## are about half an inch too high".
+##
+## A headless run uses the base size, where the wrong layout and the right one
+## are identical - so no screenshot and no coordinate check taken here could
+## ever have caught it. What CAN be checked is the property that makes it
+## impossible: the control resolves its position from the viewport's edge.
+func _check_the_controls_are_anchored(main) -> void:
+	_t.begin("smoke > the controls are anchored, not placed")
+	var stick: Control = main._stick
+	_t.eq(stick.anchor_bottom, 1.0,
+		"the crane dial is not anchored to the bottom of the viewport - it will drift on a tall screen")
+	_t.eq(stick.anchor_top, 1.0,
+		"the crane dial is anchored to the TOP, so its distance from the bottom depends on the aspect ratio")
+	_t.lt(stick.offset_bottom, 0.0,
+		"the crane dial is offset downward from its anchor and will sit off the bottom of the screen")
+
+	# And it must own its own touches. The same shipped bug had a second half:
+	# a hand-rolled hit test scaled touches into a coordinate space of its own,
+	# so the drawn control and the region that responded disagreed with each
+	# other as well as with the screen.
+	_t.ok(stick.gui_input.get_connections().size() > 0,
+		"the dial does not handle its own input, so its hit box is a second source of truth")
+	_t.eq(stick.mouse_filter, Control.MOUSE_FILTER_STOP,
+		"the dial does not consume its own touches, so a slew will also register as a swipe")
 
 
 ## The assertion the first build did not have, and the one that would have

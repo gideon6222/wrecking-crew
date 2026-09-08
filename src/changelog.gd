@@ -12,9 +12,20 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.2.0"
+const VERSION := "0.2.1"
 
 const RELEASES := [
+	{
+		"version": "0.2.1",
+		"date": "2026-09-08",
+		"title": "A dial you can actually hit",
+		"notes": [
+			"Fixed: the controls were drawn well above where they responded. Both are now in the same place.",
+			"The lane buttons are gone. There is a crane dial at the bottom instead - drag it to slew the boom.",
+			"The dial draws the machine from above, with the boom where you have pointed it and the ball where it actually is.",
+			"Swipe anywhere else, including below the dial, to move the rig a lane.",
+		],
+	},
 	{
 		"version": "0.2.0",
 		"date": "2026-09-08",

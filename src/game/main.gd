@@ -57,10 +57,12 @@ var _banner: Label
 var _readout: Label
 var _meter_back: ColorRect
 var _meter_fill: ColorRect
-var _pad_left: Panel
-var _pad_right: Panel
-var _pad_flash := 0.0
-var _pad_flashed := 0
+var _ui: Control            ## fills the real viewport; everything anchors to it
+var _stick: Control         ## the crane dial - drag it to slew the boom
+var _stick_grab := -1       ## which touch index owns the dial, -1 for none
+var _swipe_from := 0.0
+var _swipe_id := -1
+var _swipe_used := false
 
 var _dragging := false
 var _shake := 0.0
@@ -347,39 +349,119 @@ func _make_multimesh(mesh: Mesh, pool: int, colours: bool) -> MultiMeshInstance3
 	return mmi
 
 
-## Big enough for a thumb without looking at it: 210px is about 15mm on this
-## screen, and they sit clear of the bottom edge so the gesture bar cannot eat
-## the press.
-const PAD_SIZE := 210
-const PAD_BOTTOM := 250
+## The dial is 380 canvas units across on a 1080-wide base, so about a third of
+## the screen width - roughly 3.5cm on this phone, which is a thumb. It sits
+## clear of the bottom edge so the system gesture bar cannot eat the press.
+const STICK_SIZE := 380.0
+const STICK_BOTTOM := 190.0
 
 
-func _make_pad(glyph: String, left: int) -> Panel:
-	var pad := Panel.new()
-	pad.position = Vector2(left, 1920 - PAD_BOTTOM - PAD_SIZE)
-	pad.size = Vector2(PAD_SIZE, PAD_SIZE)
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.06, 0.06, 0.07, 0.42)
-	style.border_color = Color(1.0, 0.86, 0.42, 0.55)
-	style.set_border_width_all(4)
-	style.set_corner_radius_all(28)
-	pad.add_theme_stylebox_override("panel", style)
+## Drawn rather than assembled from Panels, because what it needs to show is a
+## machine seen from above with its boom pointing somewhere - and that is three
+## draw calls and no nodes.
+##
+## The boom on the dial is drawn from `sim.yaw` directly, never from the 3D
+## boom's transform, so the control and the world read the same source. Screen
+## rotation is clockwise-positive with y down, and world +yaw is to the
+## player's right, so the two signs agree with no flip - which is only true
+## because the street is drawn along -Z. See the note at the top of this file.
+func _draw_stick() -> void:
+	var r := STICK_SIZE * 0.5
+	var c := Vector2(r, r)
+	var lit: float = 0.55 if _stick_grab >= 0 else 0.32
 
-	var label := Label.new()
-	label.text = glyph
-	label.size = Vector2(PAD_SIZE, PAD_SIZE)
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 96)
-	label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.6, 0.8))
-	pad.add_child(label)
-	return pad
+	_stick.draw_circle(c, r, Color(0.05, 0.05, 0.06, 0.34))
+	_stick.draw_arc(c, r - 4.0, 0.0, TAU, 64, Color(1.0, 0.86, 0.42, lit), 4.0)
+
+	# The slew limits, so the player can see where the boom runs out of travel
+	# instead of discovering it by pushing into a stop.
+	for stop in [-Tuning.YAW_MAX, Tuning.YAW_MAX]:
+		var d := Vector2(sin(stop), -cos(stop))
+		_stick.draw_line(c + d * (r * 0.62), c + d * (r - 8.0),
+			Color(1.0, 0.86, 0.42, 0.22), 3.0)
+
+	var dir := Vector2(sin(sim.yaw), -cos(sim.yaw))
+	var side := Vector2(dir.y, -dir.x)
+
+	# The tracks: the machine's body, which does NOT turn with the boom.
+	_stick.draw_line(c + Vector2(-26, 0), c + Vector2(-26, 0), Color.TRANSPARENT, 1.0)
+	var body := PackedVector2Array([
+		c + Vector2(-30, -34), c + Vector2(30, -34),
+		c + Vector2(30, 34), c + Vector2(-30, 34)])
+	_stick.draw_colored_polygon(body, Color(0.22, 0.21, 0.20, 0.9))
+
+	# The turret and the boom, which do.
+	_stick.draw_line(c - dir * 34.0, c + dir * (r * 0.80), Color(0.86, 0.68, 0.20, 0.95), 13.0)
+	_stick.draw_circle(c - dir * 40.0, 15.0, Color(0.30, 0.29, 0.28, 0.95))
+	_stick.draw_circle(c, 21.0, Color(0.42, 0.40, 0.36, 0.95))
+
+	# And the ball, at its real bearing rather than the boom's - the gap
+	# between the two IS the lag, and this is the one place it can be read
+	# without taking your eyes off the street.
+	var ball_dir := Vector2(sin(sim.bearing), -cos(sim.bearing))
+	var reach: float = clampf(sim.radius / Tuning.RADIUS_MAX, 0.0, 1.0)
+	_stick.draw_circle(c + ball_dir * (r * 0.46 + r * 0.42 * reach), 16.0,
+		Color(0.92, 0.86, 0.72, 0.95))
 
 
+## The dial owns its own touches, so the drawn circle and the region that
+## responds are the same rectangle by construction.
+##
+## Absolute rather than relative: on a joystick the thumb's position IS the
+## value, and a relative mapping would let the boom and the dial drift apart
+## until they disagreed about where the crane was pointing.
+func _on_stick_input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch or event is InputEventMouseButton:
+		if event.pressed:
+			_stick_grab = event.index if event is InputEventScreenTouch else 0
+			_aim_from_stick(event.position)
+		else:
+			_stick_grab = -1
+		_stick.accept_event()
+	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
+		if _stick_grab >= 0:
+			_aim_from_stick(event.position)
+			_stick.accept_event()
+
+
+func _aim_from_stick(local: Vector2) -> void:
+	var r := STICK_SIZE * 0.5
+	var off := (local - Vector2(r, r)) / (r * 0.82)
+	# Only the horizontal component steers the boom - the crane slews, it does
+	# not luff - but the thumb is allowed to travel anywhere inside the dial so
+	# a diagonal drag still reads as intended.
+	sim.aim_to(clampf(off.x, -1.0, 1.0) * Tuning.YAW_MAX)
+
+
+## THE LAYOUT RULE, learned by shipping it wrong.
+##
+## `window/stretch/aspect = "expand"` keeps the base WIDTH and extends the
+## HEIGHT to the device's aspect. The project's base is 1080x1920; an S26 Ultra
+## is about 19.5:9, so the canvas it actually renders into is roughly 1080x2340.
+## Laying anything out against the number 1920 therefore puts it hundreds of
+## pixels off the bottom of the screen, and Gideon's report - "the icons are
+## about half an inch too high" - was exactly that.
+##
+## It shipped with a second bug of the same origin: the hit test scaled touches
+## into a 1080x1920 space of its own, so the drawn control and its touch target
+## were in two different coordinate systems and disagreed with each other as
+## well as with the screen.
+##
+## So: NOTHING here is positioned against a literal screen size. One Control
+## fills the viewport, everything anchors to that, and every interactive
+## control handles its OWN input through `_gui_input`. Position and hit box are
+## then the same object and cannot drift apart - which is the only fix that
+## stays fixed.
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "Hud"
 	add_child(layer)
+
+	_ui = Control.new()
+	_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ui.name = "Ui"
+	layer.add_child(_ui)
 
 	_readout = Label.new()
 	_readout.position = Vector2(46, 60)
@@ -387,7 +469,7 @@ func _build_hud() -> void:
 	_readout.add_theme_color_override("font_color", Color(1, 0.96, 0.88))
 	_readout.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	_readout.add_theme_constant_override("outline_size", 12)
-	layer.add_child(_readout)
+	_ui.add_child(_readout)
 
 	# The power meter sits directly under the rubble count, because rubble is
 	# what fills it. A gauge placed away from the thing it measures is a gauge
@@ -396,39 +478,52 @@ func _build_hud() -> void:
 	_meter_back.position = Vector2(46, 150)
 	_meter_back.size = Vector2(360, 18)
 	_meter_back.color = Color(0, 0, 0, 0.45)
-	layer.add_child(_meter_back)
+	_ui.add_child(_meter_back)
 
 	_meter_fill = ColorRect.new()
 	_meter_fill.position = Vector2(48, 152)
 	_meter_fill.size = Vector2(0, 14)
 	_meter_fill.color = Color(1.0, 0.72, 0.20)
-	layer.add_child(_meter_fill)
+	_ui.add_child(_meter_fill)
 
 	# Centred and large, because it is the only moment the game speaks to the
 	# player. It never blocks: it runs on its own timer and the next street
 	# starts without a tap.
 	_banner = Label.new()
-	_banner.position = Vector2(0, 720)
-	_banner.size = Vector2(1080, 130)
+	_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_banner.anchor_top = 0.34
+	_banner.anchor_bottom = 0.34
+	_banner.anchor_left = 0.0
+	_banner.anchor_right = 1.0
+	_banner.offset_left = 0
+	_banner.offset_right = 0
+	_banner.offset_top = 0
+	_banner.offset_bottom = 130
 	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_banner.add_theme_font_size_override("font_size", 84)
 	_banner.add_theme_color_override("font_color", Color(1.0, 0.86, 0.42))
 	_banner.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	_banner.add_theme_constant_override("outline_size", 16)
 	_banner.visible = false
-	layer.add_child(_banner)
+	_ui.add_child(_banner)
 
-	# Two thumb pads, bottom corners, sized for a thumb and inside the safe
-	# area. Movement is a rare deliberate press now - the drag is spent on the
-	# crane - so a discrete control is the honest shape for it.
-	#
-	# They are drawn rather than invisible because a control the player cannot
-	# see is a control they have to be told about, and there is nobody here to
-	# tell them.
-	_pad_left = _make_pad("<", 70)
-	_pad_right = _make_pad(">", 1080 - 70 - PAD_SIZE)
-	layer.add_child(_pad_left)
-	layer.add_child(_pad_right)
+	# The crane dial. Anchored to the bottom CENTRE of whatever the viewport
+	# actually is, and it draws the machine seen from above - so the control
+	# and the thing it controls are the same picture, and your aim is readable
+	# without looking up at the boom.
+	_stick = Control.new()
+	_stick.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_stick.custom_minimum_size = Vector2(STICK_SIZE, STICK_SIZE)
+	_stick.size = Vector2(STICK_SIZE, STICK_SIZE)
+	_stick.offset_left = -STICK_SIZE * 0.5
+	_stick.offset_right = STICK_SIZE * 0.5
+	_stick.offset_top = -STICK_SIZE - STICK_BOTTOM
+	_stick.offset_bottom = -STICK_BOTTOM
+	_stick.mouse_filter = Control.MOUSE_FILTER_STOP
+	_stick.name = "Stick"
+	_stick.gui_input.connect(_on_stick_input)
+	_stick.draw.connect(_draw_stick)
+	_ui.add_child(_stick)
 
 	_hud = Label.new()
 	_hud.position = Vector2(46, 186)
@@ -436,7 +531,7 @@ func _build_hud() -> void:
 	_hud.add_theme_color_override("font_color", Color(0.94, 0.92, 0.88))
 	_hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	_hud.add_theme_constant_override("outline_size", 9)
-	layer.add_child(_hud)
+	_ui.add_child(_hud)
 
 
 # --- loop -----------------------------------------------------------------
@@ -573,7 +668,6 @@ func _burst(x: float, z: float, n: int, force: float) -> void:
 
 func _advance_fx(dt: float) -> void:
 	_shake = maxf(0.0, _shake - dt * 2.4)
-	_pad_flash = maxf(0.0, _pad_flash - dt)
 	var keep: Array[Dictionary] = []
 	for c in _chunks:
 		c.life -= dt
@@ -627,6 +721,9 @@ func _sync() -> void:
 		var kerb := get_node_or_null("Kerb%d" % side)
 		if kerb:
 			kerb.position.z = wz(z)
+
+	if _stick != null:
+		_stick.queue_redraw()
 
 	_write_camera(z)
 	_write_floors()
@@ -773,10 +870,6 @@ func _write_hud() -> void:
 	_meter_fill.size.x = 356.0 * (1.0 if target <= 0 else frac)
 	_meter_fill.color = Color(0.45, 0.85, 0.45) if target <= 0 else Color(1.0, 0.72, 0.20)
 
-	var lit := Color(1, 1, 1, 1)
-	_pad_left.modulate = lit if not (_pad_flash > 0.0 and _pad_flashed < 0) else Color(1.5, 1.4, 1.0, 1)
-	_pad_right.modulate = lit if not (_pad_flash > 0.0 and _pad_flashed > 0) else Color(1.5, 1.4, 1.0, 1)
-
 	if _interlude > 0.0:
 		_banner.text = ("STREET %d CLEARED" % sim.level) if _interlude_won else "RUN OVER"
 		_banner.visible = true
@@ -821,57 +914,44 @@ func _save() -> void:
 
 # --- input ----------------------------------------------------------------
 
-## Two controls, and which one a touch drives is decided by WHERE it starts.
+## Two controls, split by where a touch begins.
 ##
-## A press that begins on a thumb pad is a lane change and nothing else - it
-## never becomes a drag. A press anywhere else aims the crane for as long as it
-## is held. Deciding at the moment of contact, and never re-deciding, is what
-## stops a slew that wanders over a pad from turning into a lane change.
+## The dial takes its own presses through `_gui_input` and calls
+## `accept_event()`, so anything that reaches here started somewhere else - and
+## anything that starts somewhere else is a swipe that moves the machine. That
+## includes the whole area below the dial, which is where Gideon asked for it,
+## and everywhere else besides, because a control with an invisible boundary is
+## a control that gets fumbled in a panic.
+##
+## One lane per swipe, and the swipe has to be released before another counts.
+## Without that, holding a drag walks the rig across the street.
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
-			var hit := _pad_at(event.position)
-			if hit != 0:
-				sim.nudge(hit)
-				_flash_pad(hit)
-				_dragging = false
-				return
-			_dragging = true
+			_swipe_id = event.index if event is InputEventScreenTouch else 0
+			_swipe_from = event.position.x
+			_swipe_used = false
 		else:
-			_dragging = false
+			_swipe_id = -1
 		return
 
-	if event is InputEventScreenDrag or (event is InputEventMouseMotion and _dragging):
-		if not _dragging:
+	if event is InputEventScreenDrag or (event is InputEventMouseMotion and _swipe_id >= 0):
+		if _swipe_id < 0 or _swipe_used:
 			return
-		# Relative drag, not absolute position: the thumb is never where the
-		# player is looking, and an absolute mapping would snap the boom to
-		# wherever the screen was first touched.
-		#
-		# No sign flip. Dragging right slews the boom right, and the boom's
-		# right is the screen's right because the street is drawn along -Z and
-		# the camera is therefore never turned around. run_smoke.gd asserts
-		# that in camera space rather than trusting it.
-		var dx: float = event.relative.x
-		var span := float(get_viewport().get_visible_rect().size.x)
-		sim.aim_to(sim.yaw_target + dx / span * Tuning.YAW_MAX * 3.0)
+		var travelled: float = event.position.x - _swipe_from
+		var threshold := float(get_viewport().get_visible_rect().size.x) * SWIPE_FRACTION
+		if absf(travelled) < threshold:
+			return
+		_swipe_used = true
+		# No sign flip: swiping right moves the rig right, because the street
+		# is drawn along -Z and the camera is therefore never turned around.
+		sim.nudge(1 if travelled > 0.0 else -1)
+		# Feedback for a control with no button to light up. A lane change is
+		# the rig lurching, so the lens lurches with it.
+		_shake = maxf(_shake, 0.12)
 
 
-## Which pad, if any, a screen position is inside. Returns -1, 0 or +1.
-##
-## Compared in the CanvasLayer's own coordinates, which is what the pads were
-## laid out in - a viewport that is not 1080 wide would otherwise put the hit
-## boxes somewhere other than the thing the player can see.
-func _pad_at(pos: Vector2) -> int:
-	var view := get_viewport().get_visible_rect().size
-	var scaled := Vector2(pos.x / view.x * 1080.0, pos.y / view.y * 1920.0)
-	if _pad_left.get_rect().has_point(scaled):
-		return -1
-	if _pad_right.get_rect().has_point(scaled):
-		return 1
-	return 0
-
-
-func _flash_pad(dir: int) -> void:
-	_pad_flash = 0.16
-	_pad_flashed = dir
+## A swipe has to cross this fraction of the screen to count as one. Big enough
+## that a wobble while reaching for the dial is not a lane change, small enough
+## to be a flick rather than a drag.
+const SWIPE_FRACTION := 0.12
