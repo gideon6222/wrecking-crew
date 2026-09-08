@@ -2,22 +2,26 @@ extends RefCounted
 
 ## THE important one.
 ##
-## The simulation is deterministic given a level: spawning is keyed on
+## The simulation is deterministic given a street: spawning is keyed on
 ## (chunk, level) through the hash, and nothing consults randf() or a real
-## clock. So twenty simulated seconds produce the same numbers on every
-## machine, every time.
+## clock. So a whole street produces the same numbers on every machine, every
+## time.
 ##
 ## That makes a golden test over the *whole game* possible, which is a far
 ## stronger safety net than testing any single function - and it is what makes
 ## a large refactor safe to attempt at all. Record it before changing anything,
 ## never after.
 ##
-## Two runs are recorded, not one, and the pair is the point. `PASSIVE` is
-## never touching the screen; `DODGING` is a scripted policy that steers away
-## from whatever is in front of it. A change that only moves one of them says
-## something a single golden could not: if passive moves and dodging does not,
-## spawning changed; if dodging moves and passive does not, steering or
-## collision did.
+## Three runs are recorded, not one, and the set is the point:
+##
+##   PASSIVE  never touches the screen
+##   DODGER   stays alive and never aims the ball at anything
+##   WRECKER  plays the game
+##
+## A change that moves only one of them says something a single golden could
+## not. If PASSIVE moves and WRECKER does not, spawning changed. If WRECKER
+## moves and PASSIVE does not, the swing or the collision did. If DODGER
+## climbs toward WRECKER, the game has quietly stopped needing to be aimed.
 ##
 ## The numbers were recorded, not designed. If a deliberate balance change
 ## moves them, re-record them in the same commit and say so in the message. A
@@ -26,20 +30,34 @@ extends RefCounted
 
 const SECONDS := 20.0
 
-## Never touches the screen: runs straight down the middle and is dead before
-## twenty seconds are up, with three lives spent and the level unfinished.
+## Never touches the screen. Dead at 12.7 seconds with three barricades taken
+## on the centre line, no rubble, and a ball that never left the boom.
 const PASSIVE := {
-	"level": 1, "lives": 0, "score": 40, "distance": 238.8, "x": 0.0,
-	"obstacles": 7, "pickups": 3, "over": true, "won": false,
+	"level": 1, "lives": 0, "rubble": 0, "power": 1, "floors_felled": 0,
+	"flattened": 0, "distance": 164.667, "x": 0.0, "theta": 0.185,
+	"ball_x": 0.92, "buildings": 10, "barricades": 5, "over": true,
+	"won": false, "peak_reach": 2.789, "peak_omega": 1.6, "seconds": 12.667,
 }
 
-## The same twenty seconds played by the dodging policy: still alive, one life
-## lost, further up the track. Same score, because the policy dodges and does
-## not go out of its way for pickups - which is honest, and is why `score` is
-## not the field these two are separated on.
-const DODGING := {
-	"level": 1, "lives": 2, "score": 40, "distance": 240.0, "x": 2.6,
-	"obstacles": 7, "pickups": 3, "over": false, "won": false,
+## Stays alive the whole twenty seconds without ever aiming: full lives, and
+## the 24 rubble is one barricade the dodging swerve happened to catch. Zero
+## floors is the number that matters - surviving is not playing.
+const DODGER := {
+	"level": 1, "lives": 3, "rubble": 24, "power": 1, "floors_felled": 0,
+	"flattened": 0, "distance": 260.0, "x": -0.825, "theta": 0.28,
+	"ball_x": 0.557, "buildings": 14, "barricades": 1, "over": false,
+	"won": false, "peak_reach": 4.207, "peak_omega": 1.483, "seconds": 20.0,
+}
+
+## Playing it: same twenty seconds, same three lives, five times the rubble,
+## two buildings flattened and the first power up already banked. `peak_reach`
+## 6.73 against the dodger's 4.21 is the whole difference in one number - the
+## ball is going a metre and a half deeper into the kerb.
+const WRECKER := {
+	"level": 1, "lives": 3, "rubble": 120, "power": 2, "floors_felled": 3,
+	"flattened": 2, "distance": 260.0, "x": -1.703, "theta": 0.572,
+	"ball_x": 1.002, "buildings": 14, "barricades": 1, "over": false,
+	"won": false, "peak_reach": 6.729, "peak_omega": 3.292, "seconds": 20.0,
 }
 
 
@@ -47,29 +65,53 @@ const DODGING := {
 ## fail together it is obvious which is the cause. A golden mismatch with this
 ## passing is a real behaviour change; a golden mismatch with this failing is
 ## not the golden's fault.
-func test_the_same_twenty_seconds_replays_identically(t: TestHarness) -> void:
-	t.dict_eq(_play(false), _play(false), "two passive runs differed - the simulation is not deterministic")
-	t.dict_eq(_play(true), _play(true), "two dodging runs differed - the simulation is not deterministic")
+func test_the_same_street_replays_identically(t: TestHarness) -> void:
+	for name in [Policies.PASSIVE, Policies.DODGER, Policies.WRECKER]:
+		t.dict_eq(_play(name), _play(name),
+			"two %s runs differed - the simulation is not deterministic" % name)
 
 
 func test_never_touching_the_screen_is_unchanged(t: TestHarness) -> void:
-	_check(t, _play(false), PASSIVE, "PASSIVE")
+	_check(t, _play(Policies.PASSIVE), PASSIVE, "PASSIVE")
 
 
-func test_a_dodging_run_is_unchanged(t: TestHarness) -> void:
-	_check(t, _play(true), DODGING, "DODGING")
+func test_a_surviving_run_that_never_aims_is_unchanged(t: TestHarness) -> void:
+	_check(t, _play(Policies.DODGER), DODGER, "DODGER")
 
 
-## Playing well must beat not playing. Recorded goldens pin the numbers; this
-## pins the *relationship*, so re-recording carelessly cannot quietly accept a
-## game where steering stopped mattering. That has happened: on another game
-## here, four completely different play styles scored identically and it took a
-## measurement to notice.
-func test_dodging_beats_standing_still(t: TestHarness) -> void:
-	var passive := _play(false)
-	var dodging := _play(true)
-	t.gt(dodging["distance"], passive["distance"],
-		"steering got no further than never touching the screen - dodging is decoration")
+func test_a_played_run_is_unchanged(t: TestHarness) -> void:
+	_check(t, _play(Policies.WRECKER), WRECKER, "WRECKER")
+
+
+## Recorded goldens pin the numbers; these pin the *relationships*, so
+## re-recording carelessly cannot quietly accept a game where aiming stopped
+## mattering. That has happened: on a sibling game four completely different
+## play styles scored identically and only a measurement noticed.
+func test_never_touching_the_screen_earns_almost_nothing(t: TestHarness) -> void:
+	var p := _play(Policies.PASSIVE)
+	t.eq(p["floors_felled"], 0,
+		"a run with no input at all knocked floors off buildings - the game plays itself")
+
+
+func test_aiming_the_ball_beats_merely_surviving(t: TestHarness) -> void:
+	# The measurement that decides whether this is a game about a wrecking ball
+	# or a lane-changer with scenery. Taken over six streets, because a single
+	# street swings wildly on layout luck: street 3 alone has the dodging
+	# policy ahead, and calibrating on it would have hidden this entirely.
+	var aimed := 0
+	var survived := 0
+	for level in [1, 2, 3, 4, 5, 6]:
+		aimed += int(Policies.play(Policies.WRECKER, level)["rubble"])
+		survived += int(Policies.play(Policies.DODGER, level)["rubble"])
+	t.gt(float(aimed), float(survived) * 1.6,
+		"aiming the ball earns barely more than never aiming it - the swing is decoration")
+
+
+func test_a_played_run_survives_where_a_passive_one_dies(t: TestHarness) -> void:
+	var played := _play(Policies.WRECKER)
+	var passive := _play(Policies.PASSIVE)
+	t.gt(float(played["lives"]), float(passive["lives"]),
+		"playing well is no safer than not playing at all")
 
 
 func _check(t: TestHarness, actual: Dictionary, expected: Dictionary, label: String) -> void:
@@ -86,21 +128,5 @@ func _check(t: TestHarness, actual: Dictionary, expected: Dictionary, label: Str
 	t.dict_eq(actual, expected, "the simulation changed (%s)" % label)
 
 
-## `dodge` picks the emptier half of the lane based on the nearest obstacle
-## ahead. Deliberately crude: a policy with any cleverness in it becomes a
-## second thing that can change, and then a golden failure means "the bot got
-## better" as often as "the game changed".
-func _play(dodge: bool) -> Dictionary:
-	var s := Sim.new()
-	var step := 1.0 / 60.0
-	var n := int(round(SECONDS / step))
-	for i in n:
-		if dodge:
-			var danger := 0.0
-			for o in s.obstacles:
-				if not o.taken and o.z > s.distance and o.z < s.distance + 14.0:
-					danger = o.x
-					break
-			s.steer_to(-Tuning.LANE_HALF_WIDTH if danger > 0.0 else Tuning.LANE_HALF_WIDTH)
-		s.advance(step)
-	return s.state()
+func _play(name: String) -> Dictionary:
+	return Policies.play(name, 1, SECONDS)

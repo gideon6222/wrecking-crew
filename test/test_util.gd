@@ -71,10 +71,10 @@ func test_the_thresholds_the_game_uses_can_all_fire(t: TestHarness) -> void:
 			if SimUtil.hash2(c, 91) < threshold:
 				hit += 1
 		return hit
-	t.gt(fires.call(Tuning.OBSTACLE_CHANCE), 60, "obstacles can never spawn")
-	t.gt(fires.call(Tuning.PICKUP_CHANCE), 50, "pickups can never spawn")
+	t.gt(fires.call(Tuning.BUILDING_CHANCE), 60, "buildings can never spawn")
+	t.gt(fires.call(Tuning.BARRICADE_CHANCE), 20, "barricades can never spawn")
 	# and the inverse: a threshold must not fire every single time either
-	t.lt(fires.call(Tuning.PICKUP_CHANCE), 200, "pickups spawn in literally every chunk")
+	t.lt(fires.call(Tuning.BUILDING_CHANCE), 200, "a building stands in literally every chunk")
 
 
 func test_a_seeded_stream_replays_and_two_seeds_differ(t: TestHarness) -> void:
