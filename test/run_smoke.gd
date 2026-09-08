@@ -197,7 +197,21 @@ func _check_screen_right(main) -> void:
 
 	_t.lt(a.z, 0.0, "the reference point is behind the camera - the camera is facing the wrong way")
 	_t.gt(b.x - a.x, 0.0,
-		"world +x projects to the LEFT of the screen: a rightward drag will move the rig the wrong way")
+		"world +x projects to the LEFT of the screen: a rightward drag will aim the crane the wrong way")
+
+	# And the other half of the same question, now that the drag aims rather
+	# than steers: a POSITIVE yaw has to put the ball at greater x. Asserting
+	# the camera alone would pass happily on a crane whose sign was inverted,
+	# and asserting the crane alone would pass happily on a mirrored camera.
+	# The bug lives in whichever of the two the test does not look at.
+	main.freeze()
+	main.sim.aim_to(Tuning.YAW_MAX)
+	main.advance(0.8, 1.0 / 60.0)
+	_t.gt(main.sim.ball_x() - main.sim.x, 0.0,
+		"aiming to a positive yaw swung the ball to the player's LEFT")
+	_t.gt(main._ball.position.x - main._rig.position.x, 0.0,
+		"the ball is DRAWN on the opposite side from where the simulation put it")
+	main.freeze()
 
 
 func _finish() -> void:

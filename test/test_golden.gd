@@ -32,32 +32,50 @@ const SECONDS := 20.0
 
 ## Never touches the screen. Dead at 12.7 seconds with three barricades taken
 ## on the centre line, no rubble, and a ball that never left the boom.
+## Never touches either control. Dead at 14.3 seconds on the barricades it
+## never moved out of, and the boom still pointing straight down the street.
+## `floors_felled` 0 is the number that matters.
 const PASSIVE := {
 	"level": 1, "lives": 0, "rubble": 0, "power": 1, "floors_felled": 0,
-	"flattened": 0, "distance": 164.667, "x": 0.0, "theta": 0.185,
-	"ball_x": 0.92, "buildings": 10, "barricades": 5, "over": true,
-	"won": false, "peak_reach": 2.789, "peak_omega": 1.6, "seconds": 12.667,
+	"flattened": 0, "distance": 185.25, "x": 0.0, "lane": 1, "yaw": 0.0,
+	"bearing": 0.141, "radius": 3.627, "ball_x": 0.508, "ball_z_ahead": 3.591,
+	"buildings": 10, "barricades": 3, "over": true, "won": false,
+	"peak_reach": 1.306, "peak_omega": 1.662, "seconds": 14.25,
 }
 
 ## Stays alive the whole twenty seconds without ever aiming: full lives, and
 ## the 24 rubble is one barricade the dodging swerve happened to catch. Zero
 ## floors is the number that matters - surviving is not playing.
+## Survives the whole twenty seconds by pressing the lane buttons and never
+## once touching the crane: full lives, and EXACTLY ZERO rubble.
+##
+## That zero is the single most valuable number in this file. Under the old
+## build the same policy scored 138 against the aiming policy's 268, because a
+## ball driven by the rig's own movement swung into things by accident. With
+## the crane on its own control there is no accident available - if this ever
+## becomes non-zero, something has started scoring without being aimed.
 const DODGER := {
-	"level": 1, "lives": 3, "rubble": 24, "power": 1, "floors_felled": 0,
-	"flattened": 0, "distance": 260.0, "x": -0.825, "theta": 0.28,
-	"ball_x": 0.557, "buildings": 14, "barricades": 1, "over": false,
-	"won": false, "peak_reach": 4.207, "peak_omega": 1.483, "seconds": 20.0,
+	"level": 1, "lives": 3, "rubble": 0, "power": 1, "floors_felled": 0,
+	"flattened": 0, "distance": 260.0, "x": 2.35, "lane": 2, "yaw": 0.0,
+	"bearing": 0.0, "radius": 3.2, "ball_x": 2.35, "ball_z_ahead": 3.2,
+	"buildings": 12, "barricades": 0, "over": false, "won": false,
+	"peak_reach": 2.355, "peak_omega": 0.0, "seconds": 20.0,
 }
 
 ## Playing it: same twenty seconds, same three lives, five times the rubble,
 ## two buildings flattened and the first power up already banked. `peak_reach`
 ## 6.73 against the dodger's 4.21 is the whole difference in one number - the
 ## ball is going a metre and a half deeper into the kerb.
+## Playing it: same twenty seconds, same three lives, 306 rubble, seven floors
+## felled and five buildings flattened. `peak_reach` 8.10 against the dodger's
+## 2.36 is the whole difference in one number - the dodger's ball never left
+## the front of the rig.
 const WRECKER := {
-	"level": 1, "lives": 3, "rubble": 120, "power": 2, "floors_felled": 3,
-	"flattened": 2, "distance": 260.0, "x": -1.703, "theta": 0.572,
-	"ball_x": 1.002, "buildings": 14, "barricades": 1, "over": false,
-	"won": false, "peak_reach": 6.729, "peak_omega": 3.292, "seconds": 20.0,
+	"level": 1, "lives": 3, "rubble": 306, "power": 2, "floors_felled": 7,
+	"flattened": 5, "distance": 260.0, "x": 2.35, "lane": 2, "yaw": -0.306,
+	"bearing": 0.733, "radius": 4.854, "ball_x": 5.597, "ball_z_ahead": 3.608,
+	"buildings": 12, "barricades": 0, "over": false, "won": false,
+	"peak_reach": 8.099, "peak_omega": 5.092, "seconds": 20.0,
 }
 
 
@@ -103,8 +121,14 @@ func test_aiming_the_ball_beats_merely_surviving(t: TestHarness) -> void:
 	for level in [1, 2, 3, 4, 5, 6]:
 		aimed += int(Policies.play(Policies.WRECKER, level)["rubble"])
 		survived += int(Policies.play(Policies.DODGER, level)["rubble"])
-	t.gt(float(aimed), float(survived) * 1.6,
-		"aiming the ball earns barely more than never aiming it - the swing is decoration")
+	# The bar is now absolute rather than a ratio, because the dodger scores
+	# exactly nothing: with the crane on its own control, a run that never
+	# touches the boom cannot knock a single floor off anything. That is a far
+	# cleaner separation than the old build's 2x, and it is the one thing the
+	# rewrite unambiguously bought.
+	t.eq(survived, 0,
+		"a run that never touches the crane still earns rubble - the boom is not the only way to score")
+	t.gt(float(aimed), 0.0, "the aiming policy earns nothing at all")
 
 
 func test_a_played_run_survives_where_a_passive_one_dies(t: TestHarness) -> void:

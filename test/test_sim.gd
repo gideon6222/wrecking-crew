@@ -10,138 +10,224 @@ extends RefCounted
 const STEP := 1.0 / 60.0
 
 
-func _run(s: Sim, seconds: float, target: float = INF) -> void:
+## A rig on an empty street.
+##
+## The crane tests below are about the crane, and a real street ruins them: the
+## ball swings out, hits a building, and `_impact()` kicks it - so "does the
+## ball settle" and "how far does one swing reach" end up measuring the level
+## layout instead. Pushing the spawn cursor past the horizon leaves the rest of
+## the simulation completely untouched, which is what makes this honest rather
+## than a mock.
+##
+## It reaches into a private, deliberately. The alternative is a test-only flag
+## on Sim, and production state that exists for tests is worse.
+func _bare() -> Sim:
+	var s := Sim.new()
+	s.buildings.clear()
+	s.barricades.clear()
+	s._chunk_spawned = 1 << 30
+	return s
+
+
+## Steps the sim without touching either control. Anything that needs input
+## issues it itself - there is no "steer toward" argument any more, because
+## there are two controls now and a single one would hide which was being
+## tested.
+func _run(s: Sim, seconds: float) -> void:
 	var n := int(round(seconds / STEP))
 	for i in n:
-		if target != INF:
-			s.steer_to(target)
 		s.advance(STEP)
 
 
-# --- the pendulum ---------------------------------------------------------
+# --- the crane ------------------------------------------------------------
 
-func test_a_still_rig_leaves_the_ball_hanging(t: TestHarness) -> void:
-	var s := Sim.new()
+func test_a_rig_that_is_never_aimed_leaves_the_ball_hanging(t: TestHarness) -> void:
+	var s := _bare()
 	_run(s, 4.0)
-	t.approx(s.theta, 0.0, 0.0001, "the ball swung with no input at all")
-	t.approx(s.ball_x(), 0.0, 0.0001, "the ball is not under the boom on a straight run")
+	t.approx(s.yaw, 0.0, 0.0001, "the boom slewed with no input at all")
+	t.approx(s.bearing, 0.0, 0.0001, "the ball moved with no input at all")
+	t.approx(s.ball_x(), Tuning.LANES[Tuning.START_LANE], 0.0001,
+		"the ball is not straight out in front of the rig on an untouched run")
 
 
-func test_the_ball_lags_the_rig_and_swings_the_other_way_first(t: TestHarness) -> void:
-	# The single most important behaviour in the game, and the one a player
-	# has to discover: pushing the rig right throws the ball LEFT, because the
-	# ball is driven by the pivot's acceleration. If this ever inverts, the
-	# whole control scheme has quietly become a lane-changer.
-	var s := Sim.new()
-	_run(s, 0.35, Tuning.LANE_HALF_WIDTH)
-	t.gt(s.x, 0.2, "the rig did not move right")
-	t.lt(s.theta, 0.0, "the ball did not trail behind the rig - it led it")
+func test_the_ball_trails_the_boom_and_swings_past_it(t: TestHarness) -> void:
+	# The single most important behaviour in the game. Slew the boom right and
+	# the ball must lag BEHIND it on the way out, then overshoot it - that
+	# overshoot is the whole reason a player leads a target instead of pointing
+	# at one. If it ever became critically damped the crane would be a cursor.
+	var s := _bare()
+	s.aim_to(Tuning.YAW_MAX)
 
-
-func test_loading_the_swing_then_turning_back_reaches_a_kerb(t: TestHarness) -> void:
-	# The crane operator's technique, asserted end to end: pull AWAY from the
-	# kerb you want, then turn back into it.
-	#
-	# Measured at the PEAK, not at the end. The first version of this test read
-	# ball_x() after the manoeuvre and found it 2.6 metres the wrong way, which
-	# looked like the physics being inverted and was really the test arriving
-	# half a swing late. The ball is only over the kerb for a moment - that
-	# moment is the whole game - so a test that samples one instant is testing
-	# its own timing.
-	# Swept, not reasoned about. Holding the load for a QUARTER period - which
-	# is what "turn back when the ball reaches its extreme" suggests - peaks at
-	# 4.19, a hand's breadth past the kerb. Holding it for a HALF period peaks
-	# at 6.76, deep into the building. The difference is that the rig has to
-	# travel too, and its own trip across the street is most of the swing's
-	# amplitude; waiting for the ball alone throws away the half that comes
-	# from where the cab ends up.
-	#
-	# Both numbers are worth keeping. The sloppy version still connects, which
-	# is what makes the first minute forgiving; the timed version connects
-	# twice as hard, which is what there is to get good at.
-	var s := Sim.new()
-	var load := Tuning.swing_period() * 0.5
-	var peak := -INF
-	var n := int(round(4.0 / STEP))
+	var lagged := false
+	var overshot := false
+	var n := int(round(3.0 / STEP))
 	for i in n:
-		s.steer_to(-Tuning.LANE_HALF_WIDTH if float(i) * STEP < load else Tuning.LANE_HALF_WIDTH)
 		s.advance(STEP)
-		peak = maxf(peak, s.ball_x())
-	t.gt(peak, Tuning.KERB_X + Tuning.BALL_RADIUS,
-		"a half-period load and a turn back never puts the ball into a building")
+		if s.yaw > 0.15 and s.bearing < s.yaw - 0.05:
+			lagged = true
+		if s.bearing > s.yaw + 0.02:
+			overshot = true
+
+	t.ok(lagged, "the ball kept up with the boom - there is no lag to lead")
+	t.ok(overshot, "the ball never swung past the boom - the spring is overdamped")
 
 
-func test_the_chain_never_goes_over_the_top(t: TestHarness) -> void:
+func test_pointing_at_a_kerb_without_slewing_does_not_reach_it(t: TestHarness) -> void:
+	# The measured margin the design rests on. Let the crane settle fully at
+	# full lock, so the ball is at rest and the radius has decayed to BOOM: the
+	# ball must fall SHORT of the kerb. Pointing is not hitting.
+	var s := _bare()
+	s.aim_to(Tuning.YAW_MAX)
+	_run(s, 9.0)
+	t.approx(s.yaw, Tuning.YAW_MAX, 0.001, "the boom never reached full lock")
+	t.approx(s.bearing_vel, 0.0, 0.02, "the ball never settled")
+	t.lt(absf(s.ball_x() - s.x), Tuning.KERB_X - Tuning.BALL_RADIUS,
+		"a settled boom at full lock already reaches the kerb - aiming is all there is to do")
+
+
+func test_slewing_hard_is_what_reaches_a_kerb(t: TestHarness) -> void:
+	# And the other half: swung across, the ball must get there. Measured at
+	# the PEAK over the manoeuvre, because the ball is only out that far for a
+	# moment - and that moment is the game. A test that samples one instant is
+	# testing its own timing.
+	var s := _bare()
+	var peak := 0.0
+	var n := int(round(2.4 / STEP))
+	for i in n:
+		s.aim_to(-Tuning.YAW_MAX if float(i) * STEP < Tuning.swing_period() * 0.5 else Tuning.YAW_MAX)
+		s.advance(STEP)
+		peak = maxf(peak, s.ball_x() - s.x)
+	t.gt(peak, Tuning.KERB_X,
+		"slewing the crane across never gets the ball properly into a building")
+
+
+func test_the_boom_never_points_backwards(t: TestHarness) -> void:
+	var s := _bare()
+	for i in 10:
+		s.aim_to(99.0 if i % 2 == 0 else -99.0)
+		_run(s, Tuning.swing_period() * 0.5)
+		t.lt(absf(s.yaw), Tuning.YAW_MAX + 0.0001, "the boom slewed past its stop")
+
+
+func test_aiming_is_clamped_at_the_seam(t: TestHarness) -> void:
 	var s := Sim.new()
-	# Drive rail to rail on the resonant period for a long time: if the clamp
-	# leaks, this is what finds it.
-	var half := Tuning.swing_period() * 0.5
-	for i in 12:
-		_run(s, half, Tuning.LANE_HALF_WIDTH if i % 2 == 0 else -Tuning.LANE_HALF_WIDTH)
-		t.lt(absf(s.theta), Tuning.MAX_THETA + 0.0001, "the chain swung past its clamp")
+	s.aim_to(50.0)
+	t.approx(s.yaw_target, Tuning.YAW_MAX, 0.0001, "aim_to accepted a bearing off the stop")
+	s.aim_to(-50.0)
+	t.approx(s.yaw_target, -Tuning.YAW_MAX, 0.0001, "aim_to accepted a bearing off the stop")
 
 
-func test_the_swing_is_frame_rate_independent(t: TestHarness) -> void:
+func test_the_radius_grows_with_how_hard_the_ball_is_travelling(t: TestHarness) -> void:
+	# Reach is a consequence of speed, not of where the boom points. That is
+	# what stops "point at the building" being the whole game.
+	var gentle := _bare()
+	gentle.aim_to(Tuning.YAW_MAX)
+	_run(gentle, 9.0)
+
+	var hard := _bare()
+	var peak := 0.0
+	var n := int(round(2.4 / STEP))
+	for i in n:
+		hard.aim_to(-Tuning.YAW_MAX if float(i) * STEP < Tuning.swing_period() * 0.5 else Tuning.YAW_MAX)
+		hard.advance(STEP)
+		peak = maxf(peak, hard.radius)
+
+	t.approx(gentle.radius, Tuning.BOOM, 0.05, "a settled crane is not at its rest length")
+	t.gt(peak, gentle.radius + 1.0, "swinging hard does not lengthen the reach at all")
+	t.lt(peak, Tuning.RADIUS_MAX + 0.0001, "the reach went past its cap")
+
+
+func test_the_crane_is_frame_rate_independent(t: TestHarness) -> void:
 	# Two 8ms steps must land where one 16ms step lands. `min(1, dt * rate)`
-	# passes at 60fps and is a different spring at 120, which is what the
-	# phone actually runs at.
-	var a := Sim.new()
-	var b := Sim.new()
+	# passes at 60fps and is a different spring at 120, which is what the phone
+	# actually runs at.
+	var a := _bare()
+	var b := _bare()
 	for i in 240:
-		a.steer_to(Tuning.LANE_HALF_WIDTH)
+		a.aim_to(Tuning.YAW_MAX)
 		a.advance(1.0 / 120.0)
 	for i in 120:
-		b.steer_to(Tuning.LANE_HALF_WIDTH)
+		b.aim_to(Tuning.YAW_MAX)
 		b.advance(1.0 / 60.0)
-	t.approx(a.x, b.x, 0.05, "the rig ends up somewhere different at 120fps")
-	t.approx(a.theta, b.theta, 0.05, "the swing is different at 120fps")
+	t.approx(a.yaw, b.yaw, 0.03, "the boom ends up somewhere different at 120fps")
+	t.approx(a.bearing, b.bearing, 0.05, "the ball ends up somewhere different at 120fps")
 
 
 func test_the_ball_position_is_derived_and_never_stored(t: TestHarness) -> void:
 	# The score and the picture must come from one source. On a sibling game a
 	# score that disagreed with the drawn object was the one bug that could not
 	# be forgiven; the only fix that makes it impossible is this.
-	var s := Sim.new()
-	_run(s, 1.2, Tuning.LANE_HALF_WIDTH)
-	t.approx(s.ball_x(), s.x + Tuning.CHAIN * sin(s.theta), 0.0001,
-		"ball_x() is not the rig plus the chain")
-	t.approx(s.ball_y(), Tuning.PIVOT_Y - Tuning.CHAIN * cos(s.theta), 0.0001,
-		"ball_y() does not follow the chain")
+	var s := _bare()
+	s.aim_to(0.7)
+	_run(s, 1.2)
+	t.approx(s.ball_x(), s.x + s.radius * sin(s.bearing), 0.0001,
+		"ball_x() is not the rig plus the boom")
+	t.approx(s.ball_z(), s.distance + s.radius * cos(s.bearing), 0.0001,
+		"ball_z() is not the rig plus the boom")
 	t.gt(s.ball_y(), 0.0, "the ball is underground")
 
 
-func test_the_ball_rises_as_it_swings_out(t: TestHarness) -> void:
-	t.gt(Tuning.ball_height(Tuning.MAX_THETA), Tuning.ball_height(0.0),
-		"the ball does not rise on a pendulum, which means the chain is not a chain")
+func test_the_ball_is_always_somewhere_ahead_of_or_beside_the_cab(t: TestHarness) -> void:
+	# A ball that can end up BEHIND the rig is a ball the player cannot watch
+	# and the camera cannot frame.
+	var s := _bare()
+	for i in 12:
+		s.aim_to(Tuning.YAW_MAX if i % 2 == 0 else -Tuning.YAW_MAX)
+		_run(s, Tuning.swing_period() * 0.5)
+		t.gt(s.ball_z() - s.distance, -0.5, "the ball got behind the cab")
 
 
-# --- the rig --------------------------------------------------------------
+# --- the rig, which is now nudged between lanes ---------------------------
 
-func test_the_rig_is_held_inside_the_street(t: TestHarness) -> void:
-	var s := Sim.new()
-	_run(s, 6.0, 999.0)
-	t.approx(s.x, Tuning.LANE_HALF_WIDTH, 0.0001, "the rig left the street")
-	t.approx(s.vx, 0.0, 0.0001, "the rig is still driving into the kerb it is already against")
+func test_a_nudge_moves_exactly_one_lane(t: TestHarness) -> void:
+	var s := _bare()
+	t.eq(s.lane, Tuning.START_LANE, "the run did not start in the starting lane")
+	s.nudge(1)
+	t.eq(s.lane, Tuning.START_LANE + 1, "a nudge did not move one lane")
+	s.nudge(-1)
+	s.nudge(-1)
+	t.eq(s.lane, Tuning.START_LANE - 1, "two nudges back did not land one lane left")
 
 
-func test_steering_is_clamped_at_the_seam(t: TestHarness) -> void:
-	var s := Sim.new()
-	s.steer_to(50.0)
-	t.approx(s.target_x, Tuning.LANE_HALF_WIDTH, 0.0001, "steer_to accepted a target off the street")
+func test_nudging_off_the_end_of_the_street_does_nothing(t: TestHarness) -> void:
+	var s := _bare()
+	for i in 8:
+		s.nudge(1)
+	t.eq(s.lane, Tuning.LANES.size() - 1, "the rig ran off the right of the street")
+	for i in 16:
+		s.nudge(-1)
+	t.eq(s.lane, 0, "the rig ran off the left of the street")
+
+
+func test_the_rig_actually_arrives_in_the_lane_it_was_sent_to(t: TestHarness) -> void:
+	var s := _bare()
+	s.nudge(1)
+	_run(s, 2.5)
+	t.approx(s.x, Tuning.LANES[Tuning.START_LANE + 1], 0.05, "the rig never reached its lane")
 
 
 func test_the_rig_eases_rather_than_snapping(t: TestHarness) -> void:
 	# A correction that is assigned rather than added cannot overshoot. The
 	# player's word for the alternative is "bouncy".
-	var s := Sim.new()
+	var s := _bare()
+	s.nudge(1)
+	var target: float = Tuning.LANES[Tuning.START_LANE + 1]
 	var peak := 0.0
 	var n := int(round(3.0 / STEP))
 	for i in n:
-		s.steer_to(1.5)
 		s.advance(STEP)
 		peak = maxf(peak, s.x)
-	t.lt(peak, 1.5 + 0.02, "the rig overshot its target - the approach is a spring, not an approach")
-	t.approx(s.x, 1.5, 0.05, "the rig never arrived at its target")
+	t.lt(peak, target + 0.02, "the rig overshot its lane - the approach is a spring, not an approach")
+
+
+func test_steer_to_snaps_to_a_real_lane(t: TestHarness) -> void:
+	# There must be no way to end up between two lanes, or every lane
+	# assertion in the suite is quietly measuring something else.
+	var s := _bare()
+	s.steer_to(99.0)
+	t.eq(s.lane, Tuning.LANES.size() - 1, "steer_to did not clamp to the outermost lane")
+	s.steer_to(0.1)
+	t.approx(s.target_x, Tuning.LANES[s.lane], 0.0001, "the rig is heading between two lanes")
 
 
 # --- what is on the street ------------------------------------------------
@@ -150,9 +236,9 @@ func test_the_first_moments_are_empty(t: TestHarness) -> void:
 	var s := Sim.new()
 	s.advance(STEP)
 	for b in s.buildings:
-		t.gt(b.z, Tuning.BOOM_FORWARD, "a building spawned close enough to be hit on frame one")
+		t.gt(b.z, Tuning.RADIUS_MAX, "a building spawned close enough to be hit on frame one")
 	for w in s.barricades:
-		t.gt(w.z, Tuning.BOOM_FORWARD, "a barricade spawned on top of the player")
+		t.gt(w.z, Tuning.RADIUS_MAX, "a barricade spawned on top of the player")
 
 
 func test_both_kerbs_get_built_on(t: TestHarness) -> void:
@@ -251,16 +337,16 @@ func test_a_flattened_building_stops_paying(t: TestHarness) -> void:
 
 
 func test_a_barricade_taken_by_the_cab_costs_a_life(t: TestHarness) -> void:
-	# Driving down the middle must be punished, or standing still is a strategy.
+	# Never pressing a button must be punished, or standing still is a strategy.
 	var s := Sim.new()
-	_run(s, 30.0, 0.0)
+	_run(s, 30.0)
 	t.lt(float(s.lives), float(Tuning.START_LIVES),
 		"a rig driven straight down the centre line never hit anything")
 
 
 func test_running_out_of_lives_ends_the_run(t: TestHarness) -> void:
 	var s := Sim.new()
-	_run(s, 40.0, 0.0)
+	_run(s, 60.0)
 	t.eq(s.over, true, "the run did not end after the lives ran out")
 	t.eq(s.won, false, "a run that ran out of lives was recorded as won")
 	t.eq(s.lives, 0, "the run ended with lives to spare")
@@ -268,9 +354,9 @@ func test_running_out_of_lives_ends_the_run(t: TestHarness) -> void:
 
 func test_advancing_a_finished_run_changes_nothing(t: TestHarness) -> void:
 	var s := Sim.new()
-	_run(s, 40.0, 0.0)
+	_run(s, 60.0)
 	var before := s.state()
-	_run(s, 5.0, 0.0)
+	_run(s, 5.0)
 	t.dict_eq(s.state(), before, "a run that is over kept simulating")
 
 # --- what happens AFTER a street, which is where the first build froze ------
@@ -307,7 +393,8 @@ func test_a_finished_street_can_be_continued(t: TestHarness) -> void:
 	t.eq(s.over, false, "the run is still over after moving to the next street")
 	t.eq(s.level, 2, "the street number did not advance")
 	t.approx(s.distance, 0.0, 0.0001, "the next street did not start at its beginning")
-	t.approx(s.theta, 0.0, 0.0001, "the ball carried its swing into the next street")
+	t.approx(s.bearing, 0.0, 0.0001, "the ball carried its swing into the next street")
+	t.approx(s.yaw, 0.0, 0.0001, "the boom kept its aim into the next street")
 
 	# The run owns these; the street does not.
 	t.eq(s.rubble, rubble_before, "rubble was lost between streets")
@@ -323,7 +410,7 @@ func test_a_finished_street_can_be_continued(t: TestHarness) -> void:
 
 func test_a_dead_run_restarts_from_the_first_street(t: TestHarness) -> void:
 	var s := Sim.new()
-	_run(s, 40.0, 0.0)
+	_run(s, 60.0)
 	t.eq(s.over, true, "the run did not end")
 	s.restart(1)
 	t.eq(s.over, false, "restarting left the run over")

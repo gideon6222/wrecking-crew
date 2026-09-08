@@ -72,7 +72,7 @@ func test_the_thresholds_the_game_uses_can_all_fire(t: TestHarness) -> void:
 				hit += 1
 		return hit
 	t.gt(fires.call(Tuning.BUILDING_CHANCE), 60, "buildings can never spawn")
-	t.gt(fires.call(Tuning.BARRICADE_CHANCE), 20, "barricades can never spawn")
+	t.gt(fires.call(Tuning.BARRICADE_CHANCE), 5, "barricades can never spawn")
 	# and the inverse: a threshold must not fire every single time either
 	t.lt(fires.call(Tuning.BUILDING_CHANCE), 200, "a building stands in literally every chunk")
 

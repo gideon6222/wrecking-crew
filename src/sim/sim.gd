@@ -52,22 +52,28 @@ var flattened: int = 0
 
 var x: float = 0.0               ## lateral position of the cab
 var vx: float = 0.0              ## lateral velocity
-var ax: float = 0.0              ## lateral acceleration, this step - drives the swing
-var target_x: float = 0.0        ## where the player is steering to
+var ax: float = 0.0              ## lateral acceleration, this step
+var target_x: float = 0.0        ## the lane the rig is heading for
+var lane: int = Tuning.START_LANE
 
 # --- the ball -------------------------------------------------------------
 
-## A damped pendulum on a moving pivot. `theta` is measured from straight down,
-## positive toward +x.
+## The crane. `yaw` is where the boom points, `bearing` is where the BALL
+## actually is, and the gap between them is the game.
 ##
-##   L * theta'' = -g * sin(theta) - a_pivot * cos(theta) - c * L * theta'
+## The player drags to set `yaw_target`; the turret slews toward it at a
+## bounded rate; the ball trails the boom as an underdamped spring, so it
+## arrives about a quarter period late and swings past. `radius` grows with how
+## fast the ball is travelling round, which is why a hard slew reaches a kerb
+## and a gentle one does not.
 ##
-## The middle term is the whole game: the ball is driven by how hard the rig
-## ACCELERATES sideways, not by where it is. So the player never places the
-## ball, they only ever push it, and the push arrives about a quarter of a
-## swing period later - which is the lag they are learning to lead.
-var theta: float = 0.0
-var omega: float = 0.0
+## Zero is straight down the street; positive is to the player's right.
+var yaw: float = 0.0
+var yaw_target: float = 0.0
+var yaw_vel: float = 0.0
+var bearing: float = 0.0
+var bearing_vel: float = 0.0
+var radius: float = Tuning.BOOM
 
 ## Live entities. Plain dictionaries rather than nodes, because a node here
 ## would drag the scene tree into the test runner.
@@ -103,9 +109,15 @@ func restart(start_level: int = 1) -> void:
 	x = 0.0
 	vx = 0.0
 	ax = 0.0
-	target_x = 0.0
-	theta = 0.0
-	omega = 0.0
+	lane = Tuning.START_LANE
+	target_x = Tuning.LANES[lane]
+	x = target_x
+	yaw = 0.0
+	yaw_target = 0.0
+	yaw_vel = 0.0
+	bearing = 0.0
+	bearing_vel = 0.0
+	radius = Tuning.BOOM
 	buildings.clear()
 	barricades.clear()
 	_chunk_spawned = -1
@@ -125,15 +137,20 @@ func restart(start_level: int = 1) -> void:
 func next_street() -> void:
 	level += 1
 	distance = 0.0
-	x = 0.0
-	vx = 0.0
-	ax = 0.0
-	target_x = 0.0
-	theta = 0.0
-	omega = 0.0
 	hit_timer = 0.0
 	over = false
 	won = false
+	lane = Tuning.START_LANE
+	x = Tuning.LANES[lane]
+	target_x = x
+	vx = 0.0
+	ax = 0.0
+	yaw = 0.0
+	yaw_target = 0.0
+	yaw_vel = 0.0
+	bearing = 0.0
+	bearing_vel = 0.0
+	radius = Tuning.BOOM
 	buildings.clear()
 	barricades.clear()
 	_chunk_spawned = -1
@@ -153,7 +170,7 @@ func advance(dt: float) -> void:
 	distance += Tuning.speed_for(level) * dt
 
 	_drive(dt)
-	_swing(dt)
+	_slew(dt)
 
 	_spawn_ahead()
 	_hit_buildings(dt)
@@ -166,9 +183,29 @@ func advance(dt: float) -> void:
 		level_finished.emit(true)
 
 
-## Steer toward a lateral position. The only input the simulation accepts.
+## Point the boom. The MAIN input, and the one the game is about.
+func aim_to(new_yaw: float) -> void:
+	yaw_target = clampf(new_yaw, -Tuning.YAW_MAX, Tuning.YAW_MAX)
+
+
+## Nudge the rig one lane. The secondary input: a discrete press, because the
+## drag is spent on the crane and obstacles are now occasional rather than the
+## thing the run is about.
+func nudge(dir: int) -> void:
+	lane = clampi(lane + signi(dir), 0, Tuning.LANES.size() - 1)
+	target_x = Tuning.LANES[lane]
+
+
+## Kept so a test or a policy can place the rig directly without pretending to
+## press a button. Snaps to the nearest lane, so there is no way to end up
+## between two of them and quietly invalidate every lane assertion.
 func steer_to(new_target_x: float) -> void:
-	target_x = clampf(new_target_x, -Tuning.LANE_HALF_WIDTH, Tuning.LANE_HALF_WIDTH)
+	var best := 0
+	for i in Tuning.LANES.size():
+		if absf(Tuning.LANES[i] - new_target_x) < absf(Tuning.LANES[best] - new_target_x):
+			best = i
+	lane = best
+	target_x = Tuning.LANES[lane]
 
 
 # --- derived, and derived is the only way these are ever obtained ----------
@@ -179,15 +216,25 @@ func steer_to(new_target_x: float) -> void:
 ## disagreed with the picture was the one bug that could not be forgiven, and
 ## the only fix that makes it impossible is having one source.
 func ball_x() -> float:
-	return x + Tuning.CHAIN * sin(theta)
+	return x + radius * sin(bearing)
 
 
 func ball_y() -> float:
-	return Tuning.ball_height(theta)
+	return Tuning.ball_height(bearing)
 
 
 func ball_z() -> float:
-	return distance + Tuning.BOOM_FORWARD
+	return distance + radius * cos(bearing)
+
+
+## Where the boom tip is - the chain hangs from here, and it is not where the
+## ball is. The gap between the two IS the lag, drawn.
+func boom_tip_x() -> float:
+	return x + Tuning.BOOM * sin(yaw)
+
+
+func boom_tip_z() -> float:
+	return distance + Tuning.BOOM * cos(yaw)
 
 
 ## Rubble still needed for the next power up, and 0 once the ladder is topped
@@ -213,8 +260,12 @@ func state() -> Dictionary:
 		"flattened": flattened,
 		"distance": snappedf(distance, 0.001),
 		"x": snappedf(x, 0.001),
-		"theta": snappedf(theta, 0.001),
+		"lane": lane,
+		"yaw": snappedf(yaw, 0.001),
+		"bearing": snappedf(bearing, 0.001),
+		"radius": snappedf(radius, 0.001),
 		"ball_x": snappedf(ball_x(), 0.001),
+		"ball_z_ahead": snappedf(ball_z() - distance, 0.001),
 		"buildings": buildings.size(),
 		"barricades": barricades.size(),
 		"over": over,
@@ -258,37 +309,48 @@ func _drive(dt: float) -> void:
 
 # --- the ball -------------------------------------------------------------
 
-func _swing(dt: float) -> void:
-	var alpha := (
-		-(Tuning.SWING_G / Tuning.CHAIN) * sin(theta)
-		- (ax / Tuning.CHAIN) * cos(theta)
-		- Tuning.SWING_DAMP * omega
-	)
-	omega += alpha * dt
-	theta += omega * dt
+func _slew(dt: float) -> void:
+	# The turret. Same shape as the rig's drive - a target velocity approached
+	# exponentially, assigned and never added, so it cannot overshoot and ring.
+	var want := clampf((yaw_target - yaw) * Tuning.YAW_GAIN,
+		-Tuning.MAX_SLEW, Tuning.MAX_SLEW)
+	yaw_vel = lerpf(yaw_vel, want, SimUtil.smooth(Tuning.YAW_RATE, dt))
+	yaw += yaw_vel * dt
+	if yaw > Tuning.YAW_MAX:
+		yaw = Tuning.YAW_MAX
+		yaw_vel = minf(yaw_vel, 0.0)
+	elif yaw < -Tuning.YAW_MAX:
+		yaw = -Tuning.YAW_MAX
+		yaw_vel = maxf(yaw_vel, 0.0)
 
-	# The chain is a chain, not a rod: it never goes over the top, and a ball
-	# that reached the clamp has stopped travelling outward rather than
-	# bouncing off an invisible wall.
-	if theta > Tuning.MAX_THETA:
-		theta = Tuning.MAX_THETA
-		omega = minf(omega, 0.0)
-	elif theta < -Tuning.MAX_THETA:
-		theta = -Tuning.MAX_THETA
-		omega = maxf(omega, 0.0)
+	# The ball, as an underdamped spring toward where the boom is pointing.
+	# Underdamped is the whole point: it arrives late and swings PAST, so the
+	# player leads a target instead of pointing at it.
+	var alpha := (yaw - bearing) * Tuning.BALL_PULL - Tuning.BALL_DAMP * bearing_vel
+	bearing_vel += alpha * dt
+	bearing += bearing_vel * dt
+
+	# Centrifugal reach. A ball swung hard flies outward, so how far the crane
+	# can hit is a consequence of how hard it was slewed rather than a
+	# constant - which is what stops "point at it" being the whole game.
+	var want_r := minf(Tuning.BOOM + Tuning.RADIUS_GAIN * absf(bearing_vel),
+		Tuning.RADIUS_MAX)
+	radius = lerpf(radius, want_r, SimUtil.smooth(Tuning.RADIUS_RATE, dt))
 
 
-## An impact reverses the ball and hands some of the energy back.
+## An impact throws the ball back the other way and hands some of the speed
+## back.
 ##
-## This is the mechanic the game is built on. Hitting a building on the left
-## kicks the ball toward the right, so a street reads as a rhythm the player
-## can chain - and a miss costs twice, because the damping has bled the swing
-## away and the next kerb is now out of reach. The floor exists so that a
-## contact made at a turning point, where the ball is barely moving, still
-## returns something to swing with.
+## This is the piece of the first build that was working and is kept exactly.
+## Hitting a building on the left kicks the ball toward the right, so a street
+## reads as a rhythm the player can chain - and a miss costs twice, because the
+## damping has bled the swing away and the next kerb is now short of reach.
 func _impact() -> void:
-	var speed := maxf(absf(omega) * Tuning.REBOUND, Tuning.REBOUND_MIN)
-	omega = -signf(theta) * speed if not is_zero_approx(theta) else -signf(omega) * speed
+	var speed := maxf(absf(bearing_vel) * Tuning.REBOUND, Tuning.REBOUND_MIN)
+	var away := -signf(bearing) if not is_zero_approx(bearing) else -signf(bearing_vel)
+	if is_zero_approx(away):
+		away = -1.0
+	bearing_vel = away * speed
 
 
 # --- what is on the street ------------------------------------------------
@@ -366,6 +428,10 @@ func _hit_buildings(dt: float) -> void:
 		if b.cool > 0.0:
 			b.cool -= dt
 			continue
+		# Two dimensions now, not one. The ball sweeps an ARC through the
+		# street ahead rather than sliding along a fixed line in front of the
+		# cab, so where it is along the road is as much a decision as how far
+		# out it has swung.
 		if absf(b.z - bz) > Tuning.BUILDING_HALF_DEPTH + Tuning.BALL_RADIUS:
 			continue
 		if float(b.side) * bx < Tuning.KERB_X - Tuning.BALL_RADIUS:
@@ -387,9 +453,11 @@ func _hit_buildings(dt: float) -> void:
 
 ## The ball, then the rig, against a barricade.
 ##
-## The ball reaches it BOOM_FORWARD metres before the cab does, which is a
-## little over half a second of warning at street speed - long enough to watch
-## the swing arrive and see whether it was enough.
+## The ball is out ahead of the cab whenever the boom is anywhere near
+## straight, so it meets a barricade before the rig does - long enough to watch
+## the swing arrive and see whether it was enough. Swung fully to the side the
+## ball is barely ahead at all, which is the honest cost of aiming at a kerb
+## while something is coming down the road.
 func _hit_barricades() -> void:
 	var bz := ball_z()
 	var bx := ball_x()
@@ -401,7 +469,7 @@ func _hit_barricades() -> void:
 
 		if absf(w.z - bz) < Tuning.BARRICADE_HALF_DEPTH + Tuning.BALL_RADIUS:
 			var overlaps := bx + Tuning.BALL_RADIUS > lo and bx - Tuning.BALL_RADIUS < hi
-			if overlaps and absf(omega) >= Tuning.BARRICADE_MIN_SWING:
+			if overlaps and absf(bearing_vel) >= Tuning.BARRICADE_MIN_SWING:
 				w.taken = true
 				_earn(Tuning.BARRICADE_RUBBLE)
 				_impact()
@@ -418,7 +486,7 @@ func _hit_barricades() -> void:
 			hit_timer = Tuning.HIT_COOLDOWN
 			# The cab clipping a barricade shakes the boom. Deterministic, and
 			# it means a mistake is felt in the tool as well as on the counter.
-			omega += 1.6 * signf(-x if not is_zero_approx(x) else 1.0)
+			bearing_vel += 1.6 * signf(-x if not is_zero_approx(x) else 1.0)
 			rig_hit.emit(x, w.z)
 			if lives <= 0:
 				over = true

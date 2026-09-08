@@ -17,49 +17,77 @@ func test_the_ball_can_actually_reach_a_kerb(t: TestHarness) -> void:
 	# Computed, never eyeballed. On a sibling game a moving obstacle shipped
 	# covering 61% of the steerable band at every point in its swing, because
 	# the clearance was judged by looking at it.
-	t.gt(Tuning.max_ball_reach(), Tuning.KERB_X + Tuning.BALL_RADIUS,
-		"the ball cannot reach the buildings even at full swing from the rail")
+	t.gt(Tuning.centre_reach(), Tuning.KERB_X + Tuning.BALL_RADIUS,
+		"the ball cannot reach a building from the middle lane even swung fully")
 
-	# And it must not be so easy that the ball is over the pavement while
-	# hanging still, which would make every building free.
-	t.lt(Tuning.LANE_HALF_WIDTH, Tuning.KERB_X - Tuning.BALL_RADIUS,
-		"a ball hanging straight down already overlaps the kerb - no swing needed")
+	# And the other direction, which is the one that decides whether this is a
+	# game or a cursor: at REST, with the boom pointed as far round as it goes,
+	# the ball must fall SHORT of the kerb. Pointing at a building cannot be
+	# enough - the ball has to be travelling.
+	var at_rest := Tuning.BOOM * sin(Tuning.YAW_MAX)
+	t.lt(at_rest, Tuning.KERB_X - Tuning.BALL_RADIUS,
+		"a boom held still already reaches the kerb, so aiming is all there is to do")
+	# The lower bound is loose on purpose. It exists to catch a boom so short
+	# that reaching a kerb needs an absurd swing every single time - not to pin
+	# a ratio. It sat at 0.85 while the boom was long enough that a nudge of
+	# speed was enough, which made the margin decorative; at 0.71 the ball has
+	# to extend by 40% to touch a kerb, and that IS the decision.
+	t.gt(at_rest, (Tuning.KERB_X - Tuning.BALL_RADIUS) * 0.6,
+		"a boom held still falls so far short that a slew is a formality, not a judgement")
 
 
 func test_reaching_a_kerb_costs_a_real_swing(t: TestHarness) -> void:
-	var need := Tuning.min_reaching_theta()
-	t.gt(need, 0.15, "the swing needed to reach a kerb is too small to be a decision")
-	t.lt(need, Tuning.MAX_THETA * 0.7,
-		"reaching a kerb needs almost the maximum swing, so there is no margin to aim with")
+	var need := Tuning.min_reaching_bearing()
+	t.gt(need, 0.15, "the bearing needed to reach a kerb is too small to be a decision")
+	t.lt(need, Tuning.YAW_MAX * 0.8,
+		"reaching a kerb needs almost the full slew, so there is no margin to aim with")
 
 
 func test_the_swing_lags_by_about_a_second(t: TestHarness) -> void:
 	# A quarter period is how long after a swerve the ball reaches its extreme.
 	# That lag IS the game: too short and the ball is a cursor, too long and
 	# the building is behind you before the swing arrives.
-	var lag := Tuning.swing_period() * 0.25
-	t.gt(lag, 0.4, "the ball answers the thumb almost immediately - there is nothing to lead")
+	var lag := Tuning.ball_lag()
+	t.gt(lag, 0.35, "the ball answers the thumb almost immediately - there is nothing to lead")
 	t.lt(lag, 1.1, "the lag is longer than a building is on screen")
 
 
 func test_a_building_is_on_screen_longer_than_the_lag(t: TestHarness) -> void:
 	# If a kerb arrives and leaves faster than a swerve can be paid off, the
 	# player is guessing rather than aiming, at every speed the ladder reaches.
-	var lag := Tuning.swing_period() * 0.25
+	var lag := Tuning.ball_lag()
 	for level in [1, 5, 10, 20]:
-		var window := (Tuning.BOOM_FORWARD + Tuning.BUILDING_HALF_DEPTH * 2.0) / Tuning.speed_for(level)
+		var window: float = (Tuning.BOOM + Tuning.BUILDING_HALF_DEPTH * 2.0) / Tuning.speed_for(level)
 		t.gt(window, lag,
 			"at street %d a building passes faster than the ball can be swung at it" % level)
 
 
-func test_a_barricade_leaves_a_way_through(t: TestHarness) -> void:
-	# It blocks one half plus a little of the middle, so there is always a side
-	# to be on - but the cab must actually fit in what is left, hitbox and all.
-	var gap := Tuning.LANE_HALF_WIDTH + Tuning.BARRICADE_INNER_X
-	t.gt(gap, Tuning.RIG_HALF_WIDTH * 2.0,
-		"the gap beside a barricade is narrower than the rig - it cannot be dodged")
-	t.gt(Tuning.BARRICADE_INNER_X + Tuning.RIG_HALF_WIDTH, 0.0,
-		"a rig sitting on the centre line must be caught by a barricade, or standing still is safe")
+func test_a_barricade_leaves_a_lane_to_be_in(t: TestHarness) -> void:
+	# It blocks one side plus a little of the middle, so there is always a lane
+	# clear of it - and the rig has to actually fit there, hitbox and all.
+	# Checked against the LANES the buttons can reach, never against a
+	# continuous band: a gap the rig cannot be nudged into is not a gap.
+	for side in [-1, 1]:
+		var lo: float = -Tuning.LANE_HALF_WIDTH if side < 0 else Tuning.BARRICADE_INNER_X
+		var hi: float = -Tuning.BARRICADE_INNER_X if side < 0 else Tuning.LANE_HALF_WIDTH
+		var safe := 0
+		for lane_x in Tuning.LANES:
+			if not (lane_x + Tuning.RIG_HALF_WIDTH > lo and lane_x - Tuning.RIG_HALF_WIDTH < hi):
+				safe += 1
+		t.gt(float(safe), 0.0,
+			"a barricade on side %d blocks every lane the rig can be nudged into" % side)
+		t.lt(float(safe), float(Tuning.LANES.size()),
+			"a barricade on side %d blocks no lane at all, so it is scenery" % side)
+
+
+func test_the_starting_lane_is_never_safe_by_default(t: TestHarness) -> void:
+	# Standing in the lane the run starts in must not be a strategy.
+	for side in [-1, 1]:
+		var lo: float = -Tuning.LANE_HALF_WIDTH if side < 0 else Tuning.BARRICADE_INNER_X
+		var hi: float = -Tuning.BARRICADE_INNER_X if side < 0 else Tuning.LANE_HALF_WIDTH
+		var mid: float = Tuning.LANES[Tuning.START_LANE]
+		t.ok(mid + Tuning.RIG_HALF_WIDTH > lo and mid - Tuning.RIG_HALF_WIDTH < hi,
+			"a barricade on side %d misses the starting lane - never moving is safe" % side)
 
 
 func test_a_barricade_cannot_be_cleared_by_a_hanging_ball(t: TestHarness) -> void:
@@ -77,20 +105,19 @@ func test_an_impact_hands_back_enough_to_reach_the_other_kerb(t: TestHarness) ->
 	# energy returned cannot carry the ball back across, every kerb has to be
 	# set up from nothing and there is no chaining to learn.
 	#
-	# Energy at the far side: (1/2)L*w^2 must clear the height of the swing
-	# needed to reach the opposite kerb.
-	var w := Tuning.REBOUND_MIN
-	var rise := 0.5 * Tuning.CHAIN * w * w / Tuning.SWING_G
-	var need := Tuning.CHAIN * (1.0 - cos(Tuning.min_reaching_theta()))
-	t.gt(rise, need,
-		"the smallest rebound cannot carry the ball back to the opposite kerb - chaining is impossible")
+	# The ball's bearing is a spring of natural frequency sqrt(BALL_PULL), so a
+	# kick of w rad/s swings it about w/sqrt(BALL_PULL) radians before it turns
+	# round. That has to clear the bearing a kerb needs.
+	var amplitude := Tuning.REBOUND_MIN / sqrt(Tuning.BALL_PULL)
+	t.gt(amplitude, Tuning.min_reaching_bearing(),
+		"the smallest rebound cannot carry the ball round to the opposite kerb - chaining is impossible")
 
 
 func test_the_power_ladder_is_reachable_inside_one_street(t: TestHarness) -> void:
 	# Measured, not assumed: the aiming bot's mean street earns this much.
 	# If the first rung costs more than a good street pays, the in-run power
 	# fantasy never starts and the meter is a bar that only ever fills a third.
-	const MEASURED_GOOD_STREET := 268
+	const MEASURED_GOOD_STREET := 310
 	t.lt(float(Tuning.meter_for(1)), float(MEASURED_GOOD_STREET),
 		"the first power up costs more than a well played street earns")
 	t.gt(float(Tuning.meter_for(1)), 40.0,
@@ -130,10 +157,22 @@ func test_a_street_is_a_sane_length(t: TestHarness) -> void:
 
 func test_the_rig_can_cross_the_street_faster_than_it_arrives(t: TestHarness) -> void:
 	# If steering is slower than the street scrolls, no amount of skill helps.
-	var seconds_to_cross := Tuning.LANE_HALF_WIDTH * 2.0 / Tuning.MAX_STEER_SPEED
+	var widest: float = absf(Tuning.LANES[0] - Tuning.LANES[Tuning.LANES.size() - 1])
+	var seconds_to_cross := widest / Tuning.MAX_STEER_SPEED
 	var seconds_of_warning := 60.0 / Tuning.speed_for(1)
 	t.gt(seconds_of_warning, seconds_to_cross * 2.0,
-		"a kerb arrives faster than the rig can cross the street - the game is unfair by construction")
+		"a barricade arrives faster than the rig can change lanes - the game is unfair by construction")
+
+
+func test_the_crane_can_be_swung_across_faster_than_the_street_arrives(t: TestHarness) -> void:
+	# The same question for the control that actually matters now: can the boom
+	# be got from one kerb to the other inside the time a building is visible?
+	# If not, a street with buildings on alternating sides is a street where
+	# half of them cannot be played, and that failure shows as absence.
+	var sweep := Tuning.YAW_MAX * 2.0 / Tuning.MAX_SLEW
+	var seconds_of_warning := 60.0 / Tuning.speed_for(1)
+	t.gt(seconds_of_warning, sweep + Tuning.ball_lag(),
+		"the crane cannot be swung kerb to kerb inside the time a building is on screen")
 
 
 func test_a_hit_costs_something_and_gives_a_moment_back(t: TestHarness) -> void:

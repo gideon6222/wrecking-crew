@@ -45,6 +45,7 @@ var _cam: Camera3D
 var _road: MeshInstance3D
 var _rig: Node3D
 var _boom: MeshInstance3D
+var _counterweight: MeshInstance3D
 var _chain: MeshInstance3D
 var _ball: MeshInstance3D
 var _floors: MultiMeshInstance3D
@@ -56,6 +57,10 @@ var _banner: Label
 var _readout: Label
 var _meter_back: ColorRect
 var _meter_fill: ColorRect
+var _pad_left: Panel
+var _pad_right: Panel
+var _pad_flash := 0.0
+var _pad_flashed := 0
 
 var _dragging := false
 var _shake := 0.0
@@ -281,6 +286,17 @@ func _build_rig() -> void:
 	_boom.material_override = _mat(Color(0.58, 0.44, 0.12), 0.8)
 	add_child(_boom)
 
+	# The counterweight, out the back of the turret. It is not decoration: it
+	# is the only thing on screen that says which way the TURRET is facing when
+	# the boom is pointed away from the camera, and a player who cannot read
+	# their own aim is guessing.
+	_counterweight = MeshInstance3D.new()
+	var cw := BoxMesh.new()
+	cw.size = Vector3(1.7, 0.9, 1.2)
+	_counterweight.mesh = cw
+	_counterweight.material_override = _mat(Color(0.24, 0.23, 0.22), 0.8)
+	add_child(_counterweight)
+
 	_chain = MeshInstance3D.new()
 	var chain_mesh := BoxMesh.new()
 	chain_mesh.size = Vector3(0.14, 0.14, 1.0)
@@ -331,6 +347,35 @@ func _make_multimesh(mesh: Mesh, pool: int, colours: bool) -> MultiMeshInstance3
 	return mmi
 
 
+## Big enough for a thumb without looking at it: 210px is about 15mm on this
+## screen, and they sit clear of the bottom edge so the gesture bar cannot eat
+## the press.
+const PAD_SIZE := 210
+const PAD_BOTTOM := 250
+
+
+func _make_pad(glyph: String, left: int) -> Panel:
+	var pad := Panel.new()
+	pad.position = Vector2(left, 1920 - PAD_BOTTOM - PAD_SIZE)
+	pad.size = Vector2(PAD_SIZE, PAD_SIZE)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.06, 0.07, 0.42)
+	style.border_color = Color(1.0, 0.86, 0.42, 0.55)
+	style.set_border_width_all(4)
+	style.set_corner_radius_all(28)
+	pad.add_theme_stylebox_override("panel", style)
+
+	var label := Label.new()
+	label.text = glyph
+	label.size = Vector2(PAD_SIZE, PAD_SIZE)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 96)
+	label.add_theme_color_override("font_color", Color(1.0, 0.9, 0.6, 0.8))
+	pad.add_child(label)
+	return pad
+
+
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "Hud"
@@ -372,6 +417,18 @@ func _build_hud() -> void:
 	_banner.add_theme_constant_override("outline_size", 16)
 	_banner.visible = false
 	layer.add_child(_banner)
+
+	# Two thumb pads, bottom corners, sized for a thumb and inside the safe
+	# area. Movement is a rare deliberate press now - the drag is spent on the
+	# crane - so a discrete control is the honest shape for it.
+	#
+	# They are drawn rather than invisible because a control the player cannot
+	# see is a control they have to be told about, and there is nobody here to
+	# tell them.
+	_pad_left = _make_pad("<", 70)
+	_pad_right = _make_pad(">", 1080 - 70 - PAD_SIZE)
+	layer.add_child(_pad_left)
+	layer.add_child(_pad_right)
 
 	_hud = Label.new()
 	_hud.position = Vector2(46, 186)
@@ -516,6 +573,7 @@ func _burst(x: float, z: float, n: int, force: float) -> void:
 
 func _advance_fx(dt: float) -> void:
 	_shake = maxf(0.0, _shake - dt * 2.4)
+	_pad_flash = maxf(0.0, _pad_flash - dt)
 	var keep: Array[Dictionary] = []
 	for c in _chunks:
 		c.life -= dt
@@ -543,15 +601,26 @@ func _sync() -> void:
 	# axis the machine is not pointing along - that is what "drifting" means.
 	_rig.rotation = Vector3(0.0, 0.0, -sim.vx * 0.035)
 
-	var pivot := Vector3(sim.x, Tuning.PIVOT_Y, wz(z + Tuning.BOOM_FORWARD))
+	# The boom points where the turret is slewed; the chain hangs from its tip;
+	# the ball is wherever the simulation says it is, which is NOT under the
+	# tip - the gap between the two is the lag, drawn.
+	#
+	# All three are placed in world space rather than parented to the rig. The
+	# rig leans into a lane change, and a boom that leaned with it would no
+	# longer meet its own chain. Two things that must touch have to be placed
+	# in one frame of reference.
+	var turret := Vector3(sim.x, 2.5, wz(z))
+	var tip := Vector3(sim.boom_tip_x(), Tuning.PIVOT_Y, wz(sim.boom_tip_z()))
 	var ball := Vector3(sim.ball_x(), sim.ball_y(), wz(sim.ball_z()))
-	# Drawn in world space, not as a child of the rig. The rig leans into a
-	# turn, and a boom that leans with it would no longer meet the chain -
-	# which hangs from the pivot in world space. Two things that must touch
-	# have to be placed in one frame of reference.
-	_span(_boom, Vector3(sim.x, 2.0, wz(z - 0.3)), pivot)
-	_span(_chain, pivot, ball)
+	_span(_boom, turret, tip)
+	_span(_chain, tip, ball)
 	_ball.position = ball
+
+	# Opposite the boom, in plan. Reads the yaw straight out of the simulation
+	# rather than from the boom's drawn transform, so the two cannot disagree.
+	_counterweight.position = Vector3(
+		sim.x - 1.9 * sin(sim.yaw), 2.6, wz(z - 1.9 * cos(sim.yaw)))
+	_counterweight.rotation = Vector3(0.0, -sim.yaw, 0.0)
 
 	_road.position = Vector3(0, -0.2, wz(z))
 	for side in [-1, 1]:
@@ -590,18 +659,27 @@ func _write_camera(z: float) -> void:
 	# Behind and above, travelling the same way the rig does, so the camera is
 	# never turned around and screen right stays world +X. The pitch is a pure
 	# rotation about X for the same reason.
-	# Back and up. The first framing put the lens 11.5 metres behind at 6.4 up
-	# and the rig filled the bottom-left quarter of a portrait screen - the
-	# player was looking at their own machine instead of at the street they
-	# are about to hit. The subject of this game is the skyline and where the
-	# ball is going, and both are ahead.
-	var sway := sim.x * 0.26
-	var eye := Vector3(sway, 8.2, wz(z) + 15.0)
+	# Back and up, and now following the BALL rather than the rig.
+	#
+	# The subject of the shot changed when the crane did. The ball sweeps an
+	# arc across the whole street instead of tracking along one line in front
+	# of the cab, so a camera locked to the rig loses it at exactly the moment
+	# it matters. Following a point between the two keeps the ball, the rig and
+	# the kerb it is heading for in one frame - and the drift itself reads as
+	# the crane swinging, which is feedback for free.
+	# Pulled back hard when the crane replaced the pendulum. The boom is a
+	# third of the length the old fixed one was - it has to be, because "at
+	# rest the ball falls just short of the kerb" is the number the whole
+	# design rests on - so the entire machine now sits much closer together,
+	# and the framing that suited the long one put a two-metre ball across a
+	# quarter of a portrait screen.
+	var sway := (sim.x * 0.32 + sim.ball_x() * 0.22)
+	var eye := Vector3(sway, 11.4, wz(z) + 21.5)
 	if _shake > 0.0:
 		# Cosmetic, and the one place randf() is legitimate: this moves the
 		# lens, not the game. Nothing reads it back.
 		eye += Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), 0.0) * _shake * 0.34
-	_cam.transform = Transform3D(Basis(Vector3.RIGHT, -0.255), eye)
+	_cam.transform = Transform3D(Basis(Vector3.RIGHT, -0.30), eye)
 
 
 func _write_floors() -> void:
@@ -695,6 +773,10 @@ func _write_hud() -> void:
 	_meter_fill.size.x = 356.0 * (1.0 if target <= 0 else frac)
 	_meter_fill.color = Color(0.45, 0.85, 0.45) if target <= 0 else Color(1.0, 0.72, 0.20)
 
+	var lit := Color(1, 1, 1, 1)
+	_pad_left.modulate = lit if not (_pad_flash > 0.0 and _pad_flashed < 0) else Color(1.5, 1.4, 1.0, 1)
+	_pad_right.modulate = lit if not (_pad_flash > 0.0 and _pad_flashed > 0) else Color(1.5, 1.4, 1.0, 1)
+
 	if _interlude > 0.0:
 		_banner.text = ("STREET %d CLEARED" % sim.level) if _interlude_won else "RUN OVER"
 		_banner.visible = true
@@ -739,19 +821,57 @@ func _save() -> void:
 
 # --- input ----------------------------------------------------------------
 
+## Two controls, and which one a touch drives is decided by WHERE it starts.
+##
+## A press that begins on a thumb pad is a lane change and nothing else - it
+## never becomes a drag. A press anywhere else aims the crane for as long as it
+## is held. Deciding at the moment of contact, and never re-deciding, is what
+## stops a slew that wanders over a pad from turning into a lane change.
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch:
-		_dragging = event.pressed
-	elif event is InputEventMouseButton:
-		_dragging = event.pressed
-	elif event is InputEventScreenDrag or (event is InputEventMouseMotion and _dragging):
+	if event is InputEventScreenTouch or event is InputEventMouseButton:
+		if event.pressed:
+			var hit := _pad_at(event.position)
+			if hit != 0:
+				sim.nudge(hit)
+				_flash_pad(hit)
+				_dragging = false
+				return
+			_dragging = true
+		else:
+			_dragging = false
+		return
+
+	if event is InputEventScreenDrag or (event is InputEventMouseMotion and _dragging):
+		if not _dragging:
+			return
 		# Relative drag, not absolute position: the thumb is never where the
-		# player is looking, and an absolute mapping makes the first touch of
-		# every run yank the rig sideways.
+		# player is looking, and an absolute mapping would snap the boom to
+		# wherever the screen was first touched.
 		#
-		# No sign flip here, and that is the point of the axis decision at the
-		# top of this file. A rightward drag increases x, and x increases to
-		# the right of the screen because the camera was never turned around.
+		# No sign flip. Dragging right slews the boom right, and the boom's
+		# right is the screen's right because the street is drawn along -Z and
+		# the camera is therefore never turned around. run_smoke.gd asserts
+		# that in camera space rather than trusting it.
 		var dx: float = event.relative.x
 		var span := float(get_viewport().get_visible_rect().size.x)
-		sim.steer_to(sim.target_x + dx / span * Tuning.LANE_HALF_WIDTH * 3.2)
+		sim.aim_to(sim.yaw_target + dx / span * Tuning.YAW_MAX * 3.0)
+
+
+## Which pad, if any, a screen position is inside. Returns -1, 0 or +1.
+##
+## Compared in the CanvasLayer's own coordinates, which is what the pads were
+## laid out in - a viewport that is not 1080 wide would otherwise put the hit
+## boxes somewhere other than the thing the player can see.
+func _pad_at(pos: Vector2) -> int:
+	var view := get_viewport().get_visible_rect().size
+	var scaled := Vector2(pos.x / view.x * 1080.0, pos.y / view.y * 1920.0)
+	if _pad_left.get_rect().has_point(scaled):
+		return -1
+	if _pad_right.get_rect().has_point(scaled):
+		return 1
+	return 0
+
+
+func _flash_pad(dir: int) -> void:
+	_pad_flash = 0.16
+	_pad_flashed = dir

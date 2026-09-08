@@ -12,9 +12,21 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.1.1"
+const VERSION := "0.2.0"
 
 const RELEASES := [
+	{
+		"version": "0.2.0",
+		"date": "2026-09-08",
+		"title": "You swing the crane now",
+		"notes": [
+			"Drag anywhere to slew the crane. The boom points where you drag; the ball trails it and swings past.",
+			"Two pads at the bottom move the rig between three lanes.",
+			"Pointing at a building is not enough - the ball only reaches a kerb once it is really travelling.",
+			"Fewer barricades. They are something to watch for now, not the job.",
+			"The camera follows the ball as well as the rig, so you can see where the swing is going.",
+		],
+	},
 	{
 		"version": "0.1.1",
 		"date": "2026-09-08",
