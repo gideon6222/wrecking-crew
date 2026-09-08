@@ -12,9 +12,22 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.2.1"
+const VERSION := "0.3.0"
 
 const RELEASES := [
+	{
+		"version": "0.3.0",
+		"date": "2026-09-08",
+		"title": "Bring it down on purpose",
+		"notes": [
+			"No more driving. Each site is one condemned building and you have a fixed number of swings.",
+			"Break the columns at the base. Every bay you drop shifts the load, and the gauge at the top shows which way it is going.",
+			"Take one side first and it goes over onto the block next door - that is a failed demolition however much came down.",
+			"Drop it straight and you get the clean bonus, which is worth more than the whole building.",
+			"Columns are not all the same. The bright ones are one swing from going.",
+			"Wide buildings cannot be reached from one spot - swipe to move the crane along the site.",
+		],
+	},
 	{
 		"version": "0.2.1",
 		"date": "2026-09-08",

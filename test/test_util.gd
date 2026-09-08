@@ -71,10 +71,20 @@ func test_the_thresholds_the_game_uses_can_all_fire(t: TestHarness) -> void:
 			if SimUtil.hash2(c, 91) < threshold:
 				hit += 1
 		return hit
-	t.gt(fires.call(Tuning.BUILDING_CHANCE), 60, "buildings can never spawn")
-	t.gt(fires.call(Tuning.BARRICADE_CHANCE), 5, "barricades can never spawn")
-	# and the inverse: a threshold must not fire every single time either
-	t.lt(fires.call(Tuning.BUILDING_CHANCE), 200, "a building stands in literally every chunk")
+	# The demolition game keys one thing on the hash - how tough each column is
+	# - so that is what gets checked. A column roll that could never reach the
+	# top of its range would mean the reinforced columns simply do not exist,
+	# and that failure shows as absence: no error, nothing missing on screen,
+	# the building just quietly always plays the same.
+	var lo := 99
+	var hi := 0
+	for level in range(1, 9):
+		for bay in Tuning.bays_for(level):
+			var hp := Tuning.column_hp_at(level, bay)
+			lo = mini(lo, hp - Tuning.column_hp_for(level))
+			hi = maxi(hi, hp - Tuning.column_hp_for(level))
+	t.eq(lo, 0, "no column is ever at the weak end of its range")
+	t.eq(hi, Tuning.COLUMN_HP_SPREAD, "no column is ever at the strong end of its range")
 
 
 func test_a_seeded_stream_replays_and_two_seeds_differ(t: TestHarness) -> void:

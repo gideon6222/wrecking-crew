@@ -4,44 +4,41 @@ extends SceneTree
 ##
 ##   godot --headless --script res://test/run_probe.gd
 ##
-## Plays every policy over several streets and prints the readings a tuning
-## pass needs: rubble, floors felled, buildings flattened, how far the ball
-## actually reached, and how fast it was swinging at its fastest.
+## Plays every policy over several buildings and prints the readings a tuning
+## pass needs: the score, how much came down, the worst lean reached, whether
+## it went over, and how many swings were left.
 ##
-## It exists because a single street is not a calibration. On a sibling game
-## four scripted policies swung 25% street to street on layout luck alone, and
-## a `par` set from street one put the best policy on three stars there and two
-## everywhere else - none of which was visible in the street-one numbers, which
-## looked clean and well separated.
+## The row that matters is DEMOLISHER against RECKLESS. They use the same
+## control and the same effort and differ only in the ORDER they take the bays
+## down, so the gap between them is the size of the decision the game is
+## actually offering.
 
 const LEVELS := [1, 2, 3, 4, 5, 6]
 
 
 func _initialize() -> void:
 	print("")
-	print("  reach ceiling from the arithmetic: %.2f   kerb: %.2f   swing period: %.2fs"
-		% [Tuning.max_ball_reach(), Tuning.KERB_X, Tuning.swing_period()])
+	print("  lag %.2fs   topple at %.2f   clean under %.2f   reach at the face %.2f"
+		% [Tuning.ball_lag(), Tuning.TOPPLE_LIMIT, Tuning.LEAN_WARN, Tuning.reach_at_face()])
 	print("")
-	print("  %-9s %6s %7s %7s %6s %6s %6s %7s %7s"
-		% ["policy", "street", "rubble", "floors", "flat", "power", "lives", "reach", "omega"])
-	print("  %s" % "-".repeat(72))
+	print("  %-11s %5s %4s %6s %7s %7s %6s %6s %6s"
+		% ["policy", "level", "bays", "rubble", "floors", "standing", "worst", "swings", "won"])
+	print("  %s" % "-".repeat(74))
 
 	for name in Policies.ALL:
-		var totals := {"rubble": 0, "floors_felled": 0, "flattened": 0}
+		var rubble := 0
+		var wins := 0
 		for level in LEVELS:
 			var r := Policies.play(name, level)
-			for k in totals:
-				totals[k] += r[k]
-			print("  %-9s %6d %7d %7d %6d %6d %6d %7.2f %7.2f" % [
-				name, level, r["rubble"], r["floors_felled"], r["flattened"],
-				r["power"], r["lives"], r["peak_reach"], r["peak_omega"],
+			rubble += int(r["rubble"])
+			if r["won"]:
+				wins += 1
+			print("  %-11s %5d %4d %6d %7d %8d %6.2f %6d %6s" % [
+				name, level, Tuning.bays_for(level), r["rubble"], r["floors_down"],
+				r["bays_standing"], r["worst_lean"], r["swings_left"], str(r["won"]),
 			])
-		print("  %-9s %6s %7.0f %7.1f %6.1f" % [
-			name, "MEAN",
-			float(totals["rubble"]) / LEVELS.size(),
-			float(totals["floors_felled"]) / LEVELS.size(),
-			float(totals["flattened"]) / LEVELS.size(),
-		])
+		print("  %-11s %5s %4s %6.0f %7s %8s %6s %6s %6d/%d" % [
+			name, "MEAN", "", float(rubble) / LEVELS.size(), "", "", "", "", wins, LEVELS.size()])
 		print("")
 
 	quit(0)

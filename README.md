@@ -1,11 +1,15 @@
 # Wrecking Crew
 
-A native Android demolition runner for a phone, built in Godot 4.7.
+A native Android demolition game for a phone, built in Godot 4.7.
 
-You drive a rig down a condemned street. The wrecking ball swings on a chain about a
-second behind you, so you never aim it directly — you aim it by deciding where you were.
-Swerve early and the ball whips out sideways into a tower; swerve late and it clips the
-thing you were trying to keep.
+You are parked in front of a condemned building with a wrecking crane and a fixed number
+of swings. Break the columns at the base to drop each bay - but every bay that falls shifts
+the load, and taking them from one side puts the whole thing over onto the block next door.
+Drop it into its own footprint and the clean bonus is worth more than the building.
+
+The boom slews to where you drag; the ball trails it and swings past, so you lead the lag
+rather than pointing. Pointing at a column is not enough - the ball only reaches the
+building once it is really travelling.
 
 Copied from `godot-template`, which is the stack every game here starts from: a pure
 simulation core with no renderer in it, headless tests, a whole-run golden, an APK size

@@ -1,36 +1,32 @@
 # Wrecking Crew
 
-A native Android demolition runner for Gideon's S26 Ultra, built in Godot 4.7 and copied
+A native Android demolition game for Gideon's S26 Ultra, built in Godot 4.7 and copied
 from `C:\dev\godot-template`.
 
-**The game in one sentence:** a rig drives down a condemned street, a wrecking ball swings
-on a boom out in front of it, and the player aims the ball only by deciding where the rig
-was a moment ago.
+**The game in one sentence:** you are parked in front of a condemned building with a
+wrecking crane and a fixed number of swings, and you have to bring it down into its own
+footprint rather than onto the block next door.
 
 **Read `C:\dev\gamedev-notes` first** — `SKILL.md` (process), `CRAFT.md` (design lessons,
 all of which apply here; they are about games, not about a language), `PIPELINE.md` (both
 stacks; the Godot one is at the end), `ASSETS.md`, `PLAYTESTS.md`. `NOTES.md` next to this
-file has the design reasoning and what to do next.
+file has the design reasoning, what has been measured, and what to do next.
 
 ---
 
 ## The design, in the order it has to be understood
 
-1. **The ball is driven by the rig's lateral ACCELERATION, not its position.** Pushing the
-   rig right throws the ball left; it arrives on the right about a quarter of a swing
-   period later. The player never places the ball, they only ever push it.
-2. **The technique is the crane operator's**: load the swing by pulling AWAY from the kerb
-   you want, then turn back into it. Measured, not guessed — a quarter-period load peaks
-   at 4.19 from the centre line, a half-period load at 6.76.
-3. **An impact reverses the ball and hands some energy back.** That is what makes a street
-   a rhythm to chain rather than a list of separate setups, and it is why `REBOUND_MIN` is
-   derived from the swing a kerb needs rather than picked.
-4. **Buildings want the ball at a turning point** (widest, slowest). **Barricades want it
-   mid-swing** (fastest, centred) — a hanging ball will not break one. One tool, two
-   phases, and the street asks for both.
-5. **Rubble is the score and the meter.** A full meter is another floor per swing for the
-   rest of the run. There is no second currency yet because there is nothing to spend one
-   on, and a HUD row that never does anything teaches the player to stop reading the HUD.
+1. **The turret slews to where the thumb drags; the ball TRAILS the boom** as an underdamped
+   spring, arriving about half a second late and swinging past. That lag is what you lead.
+2. **Pointing at a column is not enough.** At rest the ball hangs short of the face, so it
+   only reaches the building once it is really travelling. Reach is a consequence of speed.
+3. **Reaching across the site and reaching into the building trade against each other**,
+   because the ball's distance from the crane falls away as it swings round. That is why the
+   crane can be moved, and why a wide building cannot be worked from one spot.
+4. **Every bay dropped shifts the load.** The lean is the centroid of what is still standing.
+   Work along one side and it goes over onto the neighbours, which is a failed demolition.
+5. **A lone bay never topples** — without that clause no building could ever be finished.
+6. **The clean bonus is judged on the worst lean reached**, never the final one.
 
 ## Toolchain, and where it lives
 
@@ -72,17 +68,17 @@ makes them a CI gate rather than something to read.
 
 | File | What it is |
 |---|---|
-| `src/sim/sim.gd` | **The whole game, with no renderer in it.** The rig, the pendulum, the street |
+| `src/sim/sim.gd` | **The whole game, with no renderer in it.** The crane, the structure, the lean |
 | `src/sim/tuning.gd` | Every number that shapes how it feels, plus the derived arithmetic |
 | `src/sim/util.gd` | `smooth`, `hash2`, `fmt` — pure, and the hash is load-bearing |
 | `src/sim/rng.gd` | A seeded stream. Used only by the renderer's debris, never by the sim |
 | `src/game/main.gd` | The shell: reads `Sim`, draws it, feeds it input. Decides nothing |
 | `src/game/main.tscn` | Four lines. One node with the script; the world is built in code |
 | `test/policies.gd` | The scripted players. **The definition of "playing well"** |
-| `test/run_probe.gd` | Balance readings over six streets. Prints; never fails |
+| `test/run_probe.gd` | Balance readings over six sites. Prints; never fails |
 | `test/test_tuning.gd` | Design tests — assertions about intent, not values |
 | `test/test_golden.gd` | Whole-run goldens over three policies |
-| `scripts/shot.gd` | Deterministic screenshot of a chosen second of a chosen street |
+| `scripts/shot.gd` | Deterministic screenshot of a chosen second of a chosen site |
 | `scripts/check_size.gd` | APK size guard, fails in both directions |
 
 ## Invariants

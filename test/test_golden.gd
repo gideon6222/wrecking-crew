@@ -2,80 +2,90 @@ extends RefCounted
 
 ## THE important one.
 ##
-## The simulation is deterministic given a street: spawning is keyed on
-## (chunk, level) through the hash, and nothing consults randf() or a real
-## clock. So a whole street produces the same numbers on every machine, every
+## The simulation is deterministic given a level: the columns are keyed on
+## (bay, level) through the hash, and nothing consults randf() or a real clock.
+## So a whole demolition produces the same numbers on every machine, every
 ## time.
 ##
 ## That makes a golden test over the *whole game* possible, which is a far
 ## stronger safety net than testing any single function - and it is what makes
-## a large refactor safe to attempt at all. Record it before changing anything,
-## never after.
+## a large refactor safe to attempt at all. It has now carried this game across
+## two complete rewrites of what the game IS.
 ##
-## Three runs are recorded, not one, and the set is the point:
+## Four runs are recorded, and the set is the point:
 ##
-##   PASSIVE  never touches the screen
-##   DODGER   stays alive and never aims the ball at anything
-##   WRECKER  plays the game
+##   PASSIVE     touches nothing
+##   WAVER       swings the crane blindly and never moves it
+##   RECKLESS    works the bays from one end
+##   DEMOLISHER  works them in the order that keeps the building balanced
 ##
-## A change that moves only one of them says something a single golden could
-## not. If PASSIVE moves and WRECKER does not, spawning changed. If WRECKER
-## moves and PASSIVE does not, the swing or the collision did. If DODGER
-## climbs toward WRECKER, the game has quietly stopped needing to be aimed.
+## The last two are the pair that matters. They use the SAME control, spend the
+## same effort and take down the same building - they differ only in the order.
+## If those two ever converge, the order has stopped mattering and the game has
+## no decision left in it, which is exactly the failure the street version was
+## retired for.
 ##
 ## The numbers were recorded, not designed. If a deliberate balance change
-## moves them, re-record them in the same commit and say so in the message. A
-## change to rendering, layout, input or the build must not touch them - if it
-## does, something has leaked into the simulation.
+## moves them, re-record in the same commit and say so in the message. A change
+## to rendering, layout, input or the build must not touch them - if it does,
+## something has leaked into the simulation.
 
-const SECONDS := 20.0
-
-## Never touches the screen. Dead at 12.7 seconds with three barricades taken
-## on the centre line, no rubble, and a ball that never left the boom.
-## Never touches either control. Dead at 14.3 seconds on the barricades it
-## never moved out of, and the boom still pointing straight down the street.
-## `floors_felled` 0 is the number that matters.
+## Touches nothing for ninety seconds. The building is still standing, the
+## budget is untouched, and the ball has not moved off the boom. `over` stays
+## false because nothing ends a demolition except finishing it, running out of
+## swings, or putting it on the neighbours - and doing nothing does none of
+## those. That is deliberate: there is no clock.
 const PASSIVE := {
-	"level": 1, "lives": 0, "rubble": 0, "power": 1, "floors_felled": 0,
-	"flattened": 0, "distance": 185.25, "x": 0.0, "lane": 1, "yaw": 0.0,
-	"bearing": 0.141, "radius": 3.627, "ball_x": 0.508, "ball_z_ahead": 3.591,
-	"buildings": 10, "barricades": 3, "over": true, "won": false,
-	"peak_reach": 1.306, "peak_omega": 1.662, "seconds": 14.25,
+	"level": 1, "swings_left": 12, "rubble": 0, "floors_down": 0,
+	"bays_standing": 3, "lean": 0.0, "worst_lean": 0.0, "x": 0.0, "lane": 1,
+	"yaw": 0.0, "bearing": 0.0, "radius": 3.2, "ball_x": 0.0, "ball_z": 3.2,
+	"over": false, "won": false, "peak_depth": 3.2, "peak_omega": 0.0,
+	"seconds": 90.0,
 }
-
-## Stays alive the whole twenty seconds without ever aiming: full lives, and
-## the 24 rubble is one barricade the dodging swerve happened to catch. Zero
-## floors is the number that matters - surviving is not playing.
-## Survives the whole twenty seconds by pressing the lane buttons and never
-## once touching the crane: full lives, and EXACTLY ZERO rubble.
+## Swings the crane flat out and never moves it. On a three-bay building that
+## is enough - it takes the whole thing down in 12.6 seconds, faster than
+## anyone, and by luck its symmetric sweep drops the bays in a balanced order
+## so it collects the clean bonus too.
 ##
-## That zero is the single most valuable number in this file. Under the old
-## build the same policy scored 138 against the aiming policy's 268, because a
-## ball driven by the rig's own movement swung into things by accident. With
-## the crane on its own control there is no accident available - if this ever
-## becomes non-zero, something has started scoring without being aimed.
-const DODGER := {
-	"level": 1, "lives": 3, "rubble": 0, "power": 1, "floors_felled": 0,
-	"flattened": 0, "distance": 260.0, "x": 2.35, "lane": 2, "yaw": 0.0,
-	"bearing": 0.0, "radius": 3.2, "ball_x": 2.35, "ball_z_ahead": 3.2,
-	"buildings": 12, "barricades": 0, "over": false, "won": false,
-	"peak_reach": 2.355, "peak_omega": 0.0, "seconds": 20.0,
+## Which is exactly why the goldens are recorded at several widths and why
+## `test_a_blind_swinger_cannot_finish_a_wide_building` exists. On the first
+## building a blind swinger looks like the best player in the game; by the
+## sixth it cannot reach the outer bays at all.
+const WAVER := {
+	"level": 1, "swings_left": 4, "rubble": 470, "floors_down": 12,
+	"bays_standing": 0, "lean": -0.964, "worst_lean": 0.0, "x": 0.0, "lane": 1,
+	"yaw": -1.057, "bearing": -0.339, "radius": 5.318, "ball_x": -1.768,
+	"ball_z": 5.015, "over": true, "won": true, "peak_depth": 5.87,
+	"peak_omega": 5.096, "seconds": 12.6,
 }
-
-## Playing it: same twenty seconds, same three lives, five times the rubble,
-## two buildings flattened and the first power up already banked. `peak_reach`
-## 6.73 against the dodger's 4.21 is the whole difference in one number - the
-## ball is going a metre and a half deeper into the kerb.
-## Playing it: same twenty seconds, same three lives, 306 rubble, seven floors
-## felled and five buildings flattened. `peak_reach` 8.10 against the dodger's
-## 2.36 is the whole difference in one number - the dodger's ball never left
-## the front of the rig.
-const WRECKER := {
-	"level": 1, "lives": 3, "rubble": 306, "power": 2, "floors_felled": 7,
-	"flattened": 5, "distance": 260.0, "x": 2.35, "lane": 2, "yaw": -0.306,
-	"bearing": 0.733, "radius": 4.854, "ball_x": 5.597, "ball_z_ahead": 3.608,
-	"buildings": 12, "barricades": 0, "over": false, "won": false,
-	"peak_reach": 8.099, "peak_omega": 5.092, "seconds": 20.0,
+## Takes the bay that leaves the remainder most centred, every time. Middle
+## first, then the outsides - `worst_lean` never leaves 0.00, so the building
+## goes straight down and the bonus is paid.
+##
+## `lean` reads 0.96 at the end and that is not a contradiction: it is the
+## centroid of what is standing, and with a single bay left there is nothing
+## for it to be centred against. Nothing can topple from there, which is why
+## `worst_lean` - the number the bonus is judged on - stops counting once one
+## bay is left. See `test_the_worst_lean_ignores_what_cannot_topple`.
+const DEMOLISHER := {
+	"level": 1, "swings_left": 4, "rubble": 470, "floors_down": 12,
+	"bays_standing": 0, "lean": 0.963, "worst_lean": 0.0, "x": 4.2, "lane": 2,
+	"yaw": 0.378, "bearing": -0.046, "radius": 4.973, "ball_x": 3.971,
+	"ball_z": 4.968, "over": true, "won": true, "peak_depth": 5.346,
+	"peak_omega": 4.036, "seconds": 23.917,
+}
+## Works the bays from the left-hand end. Takes the same building down with
+## the same swings - and earns 220 against the balanced policy's 470, because
+## `worst_lean` reached 0.50 and the clean-drop bonus is only paid under 0.45.
+##
+## This pair is the whole game in two numbers. Same control, same effort, same
+## result on the ground; less than half the money, for the order alone.
+const RECKLESS := {
+	"level": 1, "swings_left": 4, "rubble": 220, "floors_down": 12,
+	"bays_standing": 0, "lean": 0.964, "worst_lean": 0.5, "x": 4.2, "lane": 2,
+	"yaw": 0.376, "bearing": -0.071, "radius": 4.971, "ball_x": 3.849,
+	"ball_z": 4.958, "over": true, "won": true, "peak_depth": 4.976,
+	"peak_omega": 3.327, "seconds": 23.9,
 }
 
 
@@ -83,59 +93,75 @@ const WRECKER := {
 ## fail together it is obvious which is the cause. A golden mismatch with this
 ## passing is a real behaviour change; a golden mismatch with this failing is
 ## not the golden's fault.
-func test_the_same_street_replays_identically(t: TestHarness) -> void:
-	for name in [Policies.PASSIVE, Policies.DODGER, Policies.WRECKER]:
+func test_the_same_demolition_replays_identically(t: TestHarness) -> void:
+	for name in Policies.ALL:
 		t.dict_eq(_play(name), _play(name),
 			"two %s runs differed - the simulation is not deterministic" % name)
 
 
-func test_never_touching_the_screen_is_unchanged(t: TestHarness) -> void:
+func test_touching_nothing_is_unchanged(t: TestHarness) -> void:
 	_check(t, _play(Policies.PASSIVE), PASSIVE, "PASSIVE")
 
 
-func test_a_surviving_run_that_never_aims_is_unchanged(t: TestHarness) -> void:
-	_check(t, _play(Policies.DODGER), DODGER, "DODGER")
+func test_swinging_blindly_is_unchanged(t: TestHarness) -> void:
+	_check(t, _play(Policies.WAVER), WAVER, "WAVER")
 
 
-func test_a_played_run_is_unchanged(t: TestHarness) -> void:
-	_check(t, _play(Policies.WRECKER), WRECKER, "WRECKER")
+func test_working_from_one_end_is_unchanged(t: TestHarness) -> void:
+	_check(t, _play(Policies.RECKLESS), RECKLESS, "RECKLESS")
 
 
-## Recorded goldens pin the numbers; these pin the *relationships*, so
-## re-recording carelessly cannot quietly accept a game where aiming stopped
-## mattering. That has happened: on a sibling game four completely different
-## play styles scored identically and only a measurement noticed.
-func test_never_touching_the_screen_earns_almost_nothing(t: TestHarness) -> void:
+func test_a_balanced_demolition_is_unchanged(t: TestHarness) -> void:
+	_check(t, _play(Policies.DEMOLISHER), DEMOLISHER, "DEMOLISHER")
+
+
+## Recorded goldens pin the numbers; these pin the RELATIONSHIPS, so
+## re-recording carelessly cannot quietly accept a game where the order stopped
+## mattering. That has happened twice on this project, and only a measurement
+## noticed either time.
+func test_touching_nothing_brings_nothing_down(t: TestHarness) -> void:
 	var p := _play(Policies.PASSIVE)
-	t.eq(p["floors_felled"], 0,
-		"a run with no input at all knocked floors off buildings - the game plays itself")
+	t.eq(p["floors_down"], 0, "a run with no input at all brought floors down")
+	t.eq(p["swings_left"], Tuning.swings_for(1), "a run with no input at all spent swings")
 
 
-func test_aiming_the_ball_beats_merely_surviving(t: TestHarness) -> void:
-	# The measurement that decides whether this is a game about a wrecking ball
-	# or a lane-changer with scenery. Taken over six streets, because a single
-	# street swings wildly on layout luck: street 3 alone has the dodging
-	# policy ahead, and calibrating on it would have hidden this entirely.
-	var aimed := 0
-	var survived := 0
+func test_the_order_is_worth_more_than_the_effort(t: TestHarness) -> void:
+	# The measurement that decides whether this is a demolition game or a
+	# knocking-things-over game. Both policies use the same control and take
+	# down the same buildings; the balanced one must be worth substantially
+	# more, over several sites, because a single site swings on layout luck.
+	var balanced := 0
+	var one_sided := 0
 	for level in [1, 2, 3, 4, 5, 6]:
-		aimed += int(Policies.play(Policies.WRECKER, level)["rubble"])
-		survived += int(Policies.play(Policies.DODGER, level)["rubble"])
-	# The bar is now absolute rather than a ratio, because the dodger scores
-	# exactly nothing: with the crane on its own control, a run that never
-	# touches the boom cannot knock a single floor off anything. That is a far
-	# cleaner separation than the old build's 2x, and it is the one thing the
-	# rewrite unambiguously bought.
-	t.eq(survived, 0,
-		"a run that never touches the crane still earns rubble - the boom is not the only way to score")
-	t.gt(float(aimed), 0.0, "the aiming policy earns nothing at all")
+		balanced += int(Policies.play(Policies.DEMOLISHER, level)["rubble"])
+		one_sided += int(Policies.play(Policies.RECKLESS, level)["rubble"])
+	t.gt(float(balanced), float(one_sided) * 1.5,
+		"working the bays in a good order is barely worth more than working from one end")
 
 
-func test_a_played_run_survives_where_a_passive_one_dies(t: TestHarness) -> void:
-	var played := _play(Policies.WRECKER)
-	var passive := _play(Policies.PASSIVE)
-	t.gt(float(played["lives"]), float(passive["lives"]),
-		"playing well is no safer than not playing at all")
+func test_a_blind_swinger_cannot_finish_a_wide_building(t: TestHarness) -> void:
+	# The reason the crane can move. A policy that never repositions has to
+	# fail on the buildings that are wider than its reach - otherwise parking
+	# is decoration, which is what it measured as before the site was widened.
+	var wide := Policies.play(Policies.WAVER, 6)
+	t.eq(wide["won"], false,
+		"a crane that never moves finished the widest building - parking does nothing")
+	t.gt(float(wide["bays_standing"]), 0.0, "the blind policy left nothing standing")
+
+
+func test_working_from_one_end_puts_it_on_the_neighbours(t: TestHarness) -> void:
+	var one_sided := Policies.play(Policies.RECKLESS, 6)
+	t.eq(one_sided["won"], false, "taking a wide building down from one end succeeded")
+	t.gt(one_sided["worst_lean"], Tuning.LEAN_WARN,
+		"a one-sided demolition never even threatened to go over")
+
+
+func test_a_balanced_demolition_drops_it_clean(t: TestHarness) -> void:
+	for level in [1, 3, 6]:
+		var r := Policies.play(Policies.DEMOLISHER, level)
+		t.eq(r["won"], true, "the balanced policy failed level %d" % level)
+		t.lt(r["worst_lean"], Tuning.LEAN_WARN,
+			"the balanced policy did not manage a clean drop on level %d" % level)
 
 
 func _check(t: TestHarness, actual: Dictionary, expected: Dictionary, label: String) -> void:
@@ -153,4 +179,4 @@ func _check(t: TestHarness, actual: Dictionary, expected: Dictionary, label: Str
 
 
 func _play(name: String) -> Dictionary:
-	return Policies.play(name, 1, SECONDS)
+	return Policies.play(name, 1)

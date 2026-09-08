@@ -5,122 +5,109 @@ Decisions specific to this game, and what to do next in it. General lessons belo
 
 ## Why this game
 
-The first real game on the Godot stack, chosen from two proposals on 2026-09-08. It is in
-the hyper-casual runner family like Coreward and Candle Gift, but the control scheme is
-the thing that is new: **you never place the tool, you only push it.**
+The first real game on the Godot stack. It has been through three shapes in one day, and
+the reason is worth keeping because each change came from a measurement or from Gideon:
 
-That is a direct answer to the most useful sentence found while rebuilding Candle Gift —
-a strategy guide saying *"sometimes you need to start moving well before an obstacle is in
-reach"*. In that game it was a consequence of a trailing formation. Here it is the entire
-control scheme.
+1. **A lane runner** where the ball was driven by the rig's lateral acceleration. Aiming was
+   the whole game and you could not see yourself aim.
+2. **A crane runner** where the turret slewed to the thumb. Legible, and it bought the one
+   thing that mattered - a policy that never touched the crane scored *exactly zero* - but
+   the buildings were still things you drove past, so hitting them was optional and there
+   was no risk anywhere.
+3. **A demolition game**, on Gideon's note: *"there isn't really a risk or reward yet... I
+   want to focus on the breaking part and don't know if this forward lane style game is the
+   best option."* He was right, and it was not a balance problem. In a runner the buildings
+   are scenery you pass; passing is free; no tuning makes optional destruction necessary.
 
-It is also the pitch that most needs to be native: hundreds of physics debris chunks under
-real shadowed lighting is precisely the ceiling the WebView was imposing.
+Now each site is one building, you have a fixed number of swings, and the order you take the
+columns in decides whether it folds into its own footprint or goes over onto the block next
+door. The crane, the lag, the dial and the whole test stack came across all three times,
+which is what the pure-simulation core was for.
 
-## The crane rewrite, 2026-09-08
+## The design, in the order it has to be understood
 
-Gideon's note on the first build: *"it would be more fun if the main goal was to rotate the
-crane part to hit the buildings, especially as we add things to aim for."* He was right, and
-the reason is worth keeping: in the first build aiming WAS the whole game and yet you could
-not see yourself aim. The ball was driven by the rig's lateral acceleration, so the only
-feedback on your aim was whether you hit something.
-
-Now the turret slews to where the thumb drags, the ball trails the boom as an underdamped
-spring, and reach comes from how fast the ball is travelling round rather than from where the
-boom points. The lag survives - it is what you lead - but it is legible.
-
-**What the rewrite unambiguously bought:** a policy that never touches the crane now scores
-**exactly zero**. Under the old scheme the same policy scored 138 against the aiming policy's
-268, because a ball driven by the rig's own movement swung into things by accident. There is
-no accident available any more. That zero is pinned in `test_golden.gd` and it is the single
-most valuable number in this repo.
-
-**The open design problem, stated plainly.** Reach rises monotonically with swing speed and
-*nothing anywhere punishes swinging flat out*, so maximum swing is never wrong. Measured over
-six streets: a bot that reads the street and picks targets scores 310; a bot that ignores the
-street entirely and just waves the crane on the ball's own period scores 317. They are level.
-
-That was chased hard before settling. A sweep of the aiming bot's switch timing across eleven
-values never beat the waving bot - best was 0.87x - so it is not a bot bug this time. Thinning
-the street made it *worse*, not better (at 0.16 density the waving bot wins 1.74x), which kills
-the obvious explanation. The real property is that there is no cost to a wild swing.
-
-**The fix is what Gideon said next: "especially as we add things to aim for."** Targets that
-are worth different amounts turn a sweep that hits everything into a sweep that hits the wrong
-things. Until they exist, waving is a legitimate strategy and the game is a rhythm game with a
-crane on it. Do not paper over this with a test that enshrines it.
+1. **The turret slews to where the thumb drags; the ball trails the boom** as an underdamped
+   spring, arriving about half a second late and swinging past. That lag is what you lead.
+2. **Pointing at a column is not enough.** At rest the ball hangs 3.2 m out and the face is
+   at 6.0, so the ball only reaches the building once it is actually travelling round. Reach
+   is a consequence of speed, never a constant - a design test asserts both directions.
+3. **Reaching ACROSS the site and reaching INTO the building trade against each other**,
+   because the ball's distance from the crane falls away as it swings round. That is why the
+   crane can move, and why a wide building cannot be worked from one spot.
+4. **Every bay you drop shifts the load.** The lean is the centroid of what is still
+   standing; past 0.72 it goes over. Working along one side is what kills you.
+5. **A lone bay never topples.** Without that clause no building could ever be finished, in
+   any order, because the last bay standing reads as a maximum lean by definition.
+6. **The clean bonus is judged on the WORST lean reached**, not the final one - at the end
+   there is nothing left to be off-centre, so a bonus keyed on the final reading would pay
+   out for every demolition including the reckless ones.
 
 ## What is measured, as of 2026-09-08
 
-Over six streets, each policy playing the whole street:
+Over six sites, each policy playing the whole demolition:
 
-| policy | mean rubble | floors | flattened |
+| policy | mean rubble | sites won | why it loses |
 |---|---|---|---|
-| `passive` — touches nothing | 0 | 0.0 | 0.0 |
-| `dodger` — presses the lane pads, never the crane | **0** | 0.0 | 0.0 |
-| `weaver` — waves the crane, ignores the street | 317 | 10.5 | 4.5 |
-| `wrecker` — reads the street and picks targets | 310 | 9.0 | 5.0 |
+| `passive` — touches nothing | 0 | 0/6 | nothing happens; there is no clock |
+| `reckless` — works from one end | 283 | 4/6 | topples on the wide ones, never clean |
+| `waver` — swings blindly, never moves | 450 | 4/6 | cannot reach the outer bays |
+| `demolisher` — balanced order | **623** | **6/6** | — |
+
+Every policy fails for a *different, legible* reason, which is the first time that has been
+true on this project. `demolisher` against `reckless` is the pair that matters: same control,
+same effort, same building down - 2.2x the money, for the order alone.
 
 Other measured numbers worth not re-deriving:
 
-- Ball period **2.09 s**, so the lag the player leads is about **0.52 s**.
-- At rest the ball reaches **2.96** from the rig; a kerb needs **4.15**. That gap is the
-  design: pointing is not hitting, the ball has to be travelling.
-- Reach ceiling **9.93** from the outer lane against a kerb at **5.20**.
-- Radius must not saturate. At a gain of 1.75 with a cap of 11 the radius sat pinned at the
-  cap for most of a sweep, the ball blanketed a band twice the width of the street, and
-  waving beat aiming by 1.24x. The cap has to be somewhere the ball rarely reaches.
-- APK **27.11 MB**, budget recorded with ±10%.
-- 61 pure tests / 22,046 assertions in about a second; 36 smoke assertions.
+- Ball period **2.09 s**, so the lag you lead is about **0.52 s**.
+- At rest the ball reaches **3.2** and the face is at **6.0**. Pointing is not hitting.
+- Reach at the face **6.16** against a widest half-width of **9.6** - so the widest building
+  genuinely needs the crane moved.
+- The lean values are quantised by the geometry, so the thresholds were solved rather than
+  picked: 3 bays with one outer gone is 0.50; 5 bays with three down one side is 0.75; any
+  width worked alternately is 0.00. Hence topple at 0.72, clean under 0.45.
+- 57 pure tests / 4,567 assertions in about a second; 40 smoke assertions.
 
-## Four things that were built, measured, and removed or changed
+## Things that were built, measured, and removed or changed
 
 Kept here so they are not rediscovered as good ideas.
 
-1. **The height rule.** The ball rises as it swings out, so it could only damage a building
-   it was not sailing over. It has no middle setting: with two-floor buildings it never
-   fired once, and with one-floor shopfronts it made the whole of street one immune to the
-   only tool in the game. The full reasoning is in `sim.gd`. The choice it was meant to
-   create — how hard to swing, not just when — is still worth having, but as a cost rather
-   than a gate, and on the HUD.
-2. **A faster pendulum.** `SWING_G` 34 instead of 26 puts more turning points on a street,
-   which sounds like more chances to connect. It measured **24% worse** for the aiming bot,
-   because a faster swing needs tighter timing and therefore rewards the policy that
-   ignores the street and weaves on the beat. That is the wrong game.
-3. **Uncapped speed.** Speed compounding 5% a street outran the ball's fixed lag by street
-   10. Capped — at 18 m/s under the old boom, and lowered to 16.5 when the crane rewrite
-   made the boom shorter, because the window a building is aimable in is
-   `(BOOM + depth) / speed` and shortening the tool lowers the speed the ladder may reach.
-   The design test found that on its own, twice.
-4. **The whole first control scheme**, on Gideon's note. Kept in git and described above.
-   Everything measured about it is still true; it was replaced because you could not see
-   yourself aim, which no amount of tuning would have fixed.
+1. **The ball-height rule** (runner era). The ball rises as it swings, so it could only
+   damage what it was not sailing over. No middle setting: inert at one size, and it made
+   the whole first street immune at the other.
+2. **A faster pendulum** (runner era). Measured 24% worse for the aiming bot - a faster swing
+   needs tighter timing, so it rewards the policy that ignores the level.
+3. **A flat swing budget.** Three per bay drifted out of step the moment columns varied: five
+   bays of four hit points got 17 swings for a job needing 20, so the last sites were
+   arithmetically unwinnable. The budget is now derived from the actual columns.
+4. **A saturating reach.** Gain 1.75 with a cap of 11 left the radius PINNED at the cap for
+   most of a sweep, so the ball blanketed twice the width of the street and could not miss.
+   A value clamped at the top of its range is only a mechanic in the part it moves through.
+5. **Uniform columns.** With every column identical, a symmetric sweep produced a symmetric
+   collapse by accident, and a policy that never looked at the building scored top.
+6. **Recording the lean while a lone bay stood**, which put every demolition at 1.00 and made
+   the clean bonus unearnable by anybody.
 
 ## Known gaps / next, roughly in order
 
-1. **Differentiated targets.** The open problem above. Until some buildings are worth more
-   than others, sweeping blindly is as good as aiming and the main control is not really
-   being used for what it is for. This is the next thing to build, not the art.
-2. **He has not played the crane.** Whether the slew feels like a crane or like a laggy
-   cursor, whether the lane pads are reachable without looking, and whether the ball is
-   findable on screen when it swings behind the rig.
-3. **The art is a first pass and is the weakest part.** It went through four passes and
-   landed on flat-shaded boxes with a cool atmosphere against warm concrete. It reads
-   clearly and it is not yet *gritty*, which is what he asked for on Coreward. The most
-   likely wins, in order: a normal map on the concrete from ambientCG (the one import that
-   has ever paid off twice), real rubble geometry left in the street where a building came
-   down, and floors that break into pieces rather than vanishing.
-4. **No audio at all.** An action with no sound reads as not having happened. A wrecking
-   ball is the easiest sound design in any of these games — one impact with pitch and
-   filter jitter, a low engine bed, and a rising creak as the swing loads.
-5. **No yard.** The persistent half of the loop does not exist: no salvage, no shop, no
-   upgrades, no collection. The design calls for a landmark per street that is lost forever
-   if the building is flattened the wrong way, which is the reward whose value does not
-   decay. Deliberately not built before the core is known to be fun.
-6. **The rig is one mesh set.** Upgrades should change how it looks in play, which is the
-   thing he asked for by name on Coreward.
-7. **No release keystore and no Play listing.** Direct APK from a GitHub Release is the
-   path for now. See `godot-template`'s notes for what Play needs.
+1. **He has not played the demolition.** Everything about how it FEELS is unverified -
+   whether the lean gauge is readable while aiming, whether a clean drop feels earned,
+   whether the swing budget bites or just nags.
+2. **The building does not visibly fall.** A bay's cells stop being drawn and debris comes
+   off the whole height, which is legible but not spectacular. This is the single biggest
+   thing the game is missing, and it is what going native was for: pre-fractured floor slabs
+   that become rigid bodies on collapse. **Physics may only ever be cosmetic** - see the
+   note at the top of `sim.gd`.
+3. **No audio at all.** An action with no sound reads as not having happened, and a wrecking
+   ball is the easiest sound design in any of these games.
+4. **No end-of-site summary.** A banner says CLEAN DROP or IT WENT OVER and moves on. It
+   wants the haul, the swings saved and the worst lean, which are the three things the player
+   was actually managing.
+5. **Targets are not yet differentiated.** Every bay is worth its floors. Landmarks, or bays
+   worth more, would make "which one next" a richer question than "which keeps it balanced".
+6. **No yard.** No salvage, no upgrades - a longer boom, a heavier ball, a second parking
+   spot. Deliberately not built before the core is known to be fun.
+7. **No release keystore and no Play listing.** Direct APK from a GitHub Release for now.
 
 ## Things this repo does that the template does not
 

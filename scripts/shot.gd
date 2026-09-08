@@ -29,13 +29,12 @@ func _initialize() -> void:
 	# the window took to open.
 	_main.freeze()
 
-	# Played rather than watched. A passive run is three lives spent on
-	# barricades and a street nobody touched, which is a picture of the game
-	# not being played.
+	# Played rather than watched. A passive run is a building nobody touched,
+	# which is a picture of the game not being played.
 	var mem := {}
 	var step := 1.0 / 60.0
 	for i in int(round(_seconds / step)):
-		Policies.steer(Policies.WRECKER, _main.sim, mem)
+		Policies.steer(Policies.DEMOLISHER, _main.sim, mem)
 		_main.advance(step, step)
 
 
@@ -48,6 +47,6 @@ func _process(_delta: float) -> bool:
 	var img := root.get_texture().get_image()
 	img.save_png("user://shot.png")
 	print("wrote %s/shot.png at t=%.1fs  rubble=%d  floors=%d"
-		% [OS.get_user_data_dir(), _seconds, _main.sim.rubble, _main.sim.floors_felled])
+		% [OS.get_user_data_dir(), _seconds, _main.sim.rubble, _main.sim.floors_down])
 	quit(0)
 	return true
