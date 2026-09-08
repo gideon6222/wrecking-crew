@@ -80,7 +80,11 @@ const REBOUND_MIN := 1.30         ## rad/s floor, so a dead-slow tap still kicks
 
 const BUILDING_CHANCE := 0.52     ## of chunks that hold a building on either side
 const BUILDING_HALF_DEPTH := 3.0
-const FLOOR_HEIGHT := 2.4
+## Renderer-only since the height rule was removed - it sets how tall a floor
+## is drawn and nothing in the simulation reads it. Kept here because it is a
+## number that shapes how the game LOOKS, and the skyline is most of what the
+## player is reading.
+const FLOOR_HEIGHT := 3.1
 const RUBBLE_PER_FLOOR := 12
 const FLATTEN_BONUS := 30         ## for taking a building down to nothing
 

@@ -18,10 +18,14 @@ const RELEASES := [
 	{
 		"version": "0.1.0",
 		"date": "2026-09-08",
-		"title": "It runs on a phone",
+		"title": "First street",
 		"notes": [
-			"A track, something to dodge, something to collect, and three lives.",
-			"Drag to steer.",
+			"Drive the rig down a condemned street and take the buildings down.",
+			"The ball swings on the boom about a second behind you - drag AWAY from the kerb you want, then back into it.",
+			"A hit throws the ball the other way, so a street can be chained left to right to left.",
+			"Barricades block half the road: swing through them, or take the gap and give up the aim.",
+			"Rubble fills the meter; a full meter is another floor per swing for the rest of the run.",
+			"Your best haul is kept between runs.",
 		],
 	},
 ]

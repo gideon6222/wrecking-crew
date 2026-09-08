@@ -1,35 +1,54 @@
-# Godot phone-game template
+# Wrecking Crew
 
-The proving stack for Gideon's native Android games: a Godot 4 project with headless
-tests, a whole-run golden, a size guard, CI, and an APK that installs on the phone.
+A native Android demolition runner for Gideon's S26 Ultra, built in Godot 4.7 and copied
+from `C:\dev\godot-template`.
 
-**This is not a game.** It is the thing a game is copied from. It contains just enough
-playable content — a track, something to dodge, something to collect — for the tests to
-have something real to assert about.
+**The game in one sentence:** a rig drives down a condemned street, a wrecking ball swings
+on a boom out in front of it, and the player aims the ball only by deciding where the rig
+was a moment ago.
 
 **Read `C:\dev\gamedev-notes` first** — `SKILL.md` (process), `CRAFT.md` (design lessons,
-all of which apply here; they are about games, not about JavaScript), `PIPELINE.md` (the
-web stack and the shared principles), `ASSETS.md`, `PLAYTESTS.md`.
+all of which apply here; they are about games, not about a language), `PIPELINE.md` (both
+stacks; the Godot one is at the end), `ASSETS.md`, `PLAYTESTS.md`. `NOTES.md` next to this
+file has the design reasoning and what to do next.
 
 ---
 
+## The design, in the order it has to be understood
+
+1. **The ball is driven by the rig's lateral ACCELERATION, not its position.** Pushing the
+   rig right throws the ball left; it arrives on the right about a quarter of a swing
+   period later. The player never places the ball, they only ever push it.
+2. **The technique is the crane operator's**: load the swing by pulling AWAY from the kerb
+   you want, then turn back into it. Measured, not guessed — a quarter-period load peaks
+   at 4.19 from the centre line, a half-period load at 6.76.
+3. **An impact reverses the ball and hands some energy back.** That is what makes a street
+   a rhythm to chain rather than a list of separate setups, and it is why `REBOUND_MIN` is
+   derived from the swing a kerb needs rather than picked.
+4. **Buildings want the ball at a turning point** (widest, slowest). **Barricades want it
+   mid-swing** (fastest, centred) — a hanging ball will not break one. One tool, two
+   phases, and the street asks for both.
+5. **Rubble is the score and the meter.** A full meter is another floor per swing for the
+   rest of the run. There is no second currency yet because there is nothing to spend one
+   on, and a HUD row that never does anything teaches the player to stop reading the HUD.
+
 ## Toolchain, and where it lives
 
-Nothing is installed system-wide and nothing needed admin rights. Portable, under
-`C:\dev\toolchain\`:
+Nothing is installed system-wide and nothing needed admin rights.
 
 | Piece | Version | Path |
 |---|---|---|
 | Godot | 4.7.2 stable | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_*\Godot_v4.7.2-stable_win64_console.exe` |
 | JDK | Temurin 17.0.20.1 | `C:\dev\toolchain\jdk\jdk-17.0.20.1+1` |
-| Android SDK | platform 36, build-tools 36.0.0, platform-tools 37.0.1 | `C:\dev\toolchain\android-sdk` |
+| Android SDK | platform 36, build-tools 36.0.0 | `C:\dev\toolchain\android-sdk` |
 | Debug keystore | | `C:\dev\toolchain\debug.keystore` (alias `androiddebugkey`, pass `android`) |
-| Export templates | 4.7.2.stable | `%APPDATA%\Godot\export_templates\4.7.2.stable` |
 
 Godot finds the SDK, the JDK and the keystore through **editor settings**, not through
 environment variables — `%APPDATA%\Godot\editor_settings-4.7.tres`, keys under
-`export/android/`. Setting `ANDROID_HOME` alone does nothing; that costs half an hour if
-you do not know it.
+`export/android/`. Setting `ANDROID_HOME` alone does nothing.
+
+CI shares one signing identity through the `ANDROID_DEBUG_KEYSTORE_B64` repository secret,
+so builds install over each other on the phone instead of needing an uninstall.
 
 ## Commands
 
@@ -39,68 +58,65 @@ $godot = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GodotEngine.GodotEngine_Mi
 & $godot --headless --path . --import                                   # after adding files
 & $godot --headless --path . --script res://test/run_tests.gd           # pure tests, ~1s
 & $godot --headless --path . --script res://test/run_smoke.gd           # boots the real scene
+& $godot --headless --path . --script res://test/run_probe.gd           # balance readings, cannot fail
 & $godot --headless --path . --export-debug "Android" build/wrecking-crew.apk
 & $godot --headless --path . --script res://scripts/check_size.gd       # size guard
+& $godot --path . --resolution 540x960 --script res://scripts/shot.gd -- 16.0   # screenshot
 & $godot --path .                                                        # open the editor
 ```
 
-Every one exits non-zero on failure, which is what makes them a CI gate rather than
-something to read.
+Every one except the probe and the screenshot exits non-zero on failure, which is what
+makes them a CI gate rather than something to read.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `src/sim/sim.gd` | **The whole game, with no renderer in it.** |
+| `src/sim/sim.gd` | **The whole game, with no renderer in it.** The rig, the pendulum, the street |
 | `src/sim/tuning.gd` | Every number that shapes how it feels, plus the derived arithmetic |
 | `src/sim/util.gd` | `smooth`, `hash2`, `fmt` — pure, and the hash is load-bearing |
-| `src/sim/rng.gd` | A seeded stream for values that decide *when* something happens |
+| `src/sim/rng.gd` | A seeded stream. Used only by the renderer's debris, never by the sim |
 | `src/game/main.gd` | The shell: reads `Sim`, draws it, feeds it input. Decides nothing |
 | `src/game/main.tscn` | Four lines. One node with the script; the world is built in code |
-| `src/build_stamp.gd` | Overwritten at build time. Committed fallback says `dev` |
-| `src/changelog.gd` | `VERSION` and the player-facing history |
-| `test/run_tests.gd` | Pure tests. No node, no viewport, no GPU |
-| `test/run_smoke.gd` | Boots the real scene and plays it |
-| `test/harness.gd` | The assertions. Deliberately small — see NOTES.md |
+| `test/policies.gd` | The scripted players. **The definition of "playing well"** |
+| `test/run_probe.gd` | Balance readings over six streets. Prints; never fails |
+| `test/test_tuning.gd` | Design tests — assertions about intent, not values |
+| `test/test_golden.gd` | Whole-run goldens over three policies |
+| `scripts/shot.gd` | Deterministic screenshot of a chosen second of a chosen street |
 | `scripts/check_size.gd` | APK size guard, fails in both directions |
-| `scripts/stamp.ps1` | Writes the build stamp from git |
 
 ## Invariants
 
 - **`src/sim/` may not reference a Node, a Viewport, an input event or a real frame.**
-  That one rule is what makes a whole-run golden test possible and what lets the whole
-  renderer be replaced without touching game logic. If something in there needs to know
-  about the world, it takes it as an argument.
+  That one rule is what makes the whole-run golden possible and lets the renderer be
+  replaced without touching game logic.
+- **The pendulum is arithmetic, never a PhysicsBody on a joint.** A joint would put the
+  outcome of every run inside the physics server at the mercy of its tick rate and end any
+  chance of a golden. **Physics may be used for debris, which decides nothing.**
 - **Nothing that affects game state may use `randf()`.** Place-keyed decisions go through
-  `SimUtil.hash2` seeded on (chunk, level); stream-like values go through `SimRng`.
-  Cosmetic jitter may use `randf()`. The trap is that "cosmetic" is not obvious — **a
-  value that decides *when* something happens is simulation**, even if it looks like
-  decoration. On the sibling web game, loot scatter velocity looked decorative and was
-  deciding when score landed, which made the golden flake one run in ten.
-- **The hash uses unsigned shifts on a masked 32-bit value.** A signed shift clears the
-  top bit and the function silently returns only `[0, 0.5)` — which disabled three
-  shipped mechanics on another game for its entire life, with no error. `test_util.gd`
-  asserts the range and the distribution.
-- **`_ready` does not run at `add_child()`.** It is deferred to the first processed
-  frame, so a headless harness that adds the scene and immediately steps it finds every
-  field null. `main.gd` guards this with `_ensure_booted()`; keep that guard.
-- **Use `Transform3D.looking_at`, not `Node3D.look_at`.** The node method requires the
-  node to be inside the tree and errors when it is not — which is exactly the headless
-  case. The transform method is pure maths and works anywhere.
-- **`visible_instance_count` is the flush.** Every MultiMesh is a reset → push → flush
-  pipeline and forgetting the flush fails completely silently: the simulation carries on
-  perfectly and nothing is drawn. `run_smoke.gd` compares the count against the model.
-- **Freeze before advancing** in any harness, or results move with the speed of the
-  machine.
+  `SimUtil.hash2` seeded on (chunk, level). The debris uses `SimRng` — it is cosmetic and
+  still must not be random, because the smoke test asserts what is drawn against what
+  exists. **Anything that decides *when* something happens is simulation.**
+- **The world draws the street along -Z**, so the camera is never turned around and screen
+  right IS world +X. A chase camera behind an object moving toward +Z has to be rotated
+  180° about Y, which mirrors X and inverts the steering — a sibling game shipped exactly
+  that for its entire life. `run_smoke.gd` asserts it in camera space anyway.
+- **`_ready` does not run at `add_child()`.** `main.gd` guards this with `_ensure_booted()`;
+  keep that guard.
+- **`Transform3D.looking_at`, never `Node3D.look_at`** — the node method errors outside the
+  tree, which is the headless case. And **never `global_transform` in a harness**: outside
+  the tree it does not error, it returns IDENTITY, which is a plausible wrong answer.
+- **`visible_instance_count` is the flush.** Forgetting it fails completely silently.
+- **Freeze before advancing** in any harness.
+- **A headless run allocates no MultiMesh buffer**, so instance colours there read back as
+  black and prove nothing. Check colour in a real renderer or not at all.
 
 ## Things the exporter will not tell you clearly
 
 - `rendering/textures/vram_compression/import_etc2_astc=true` is **required** for an
-  Android export. Without it the export fails with a message about Project Settings.
+  Android export.
 - A `config/icon` is required, or the export errors even though it still writes a file.
-- `gradle_build/use_gradle_build=false` uses the prebuilt template and needs no Gradle
-  at all. Turn it on only when a plugin or a custom target SDK demands it — and check
-  the target API level against Play's requirement when you do.
+- `gradle_build/use_gradle_build=false` uses the prebuilt template and needs no Gradle.
 
 ## Record as you go
 
