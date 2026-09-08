@@ -111,6 +111,34 @@ func restart(start_level: int = 1) -> void:
 	_chunk_spawned = -1
 
 
+## The next street, keeping everything the RUN owns.
+##
+## A run spans streets; a street is one stretch of road inside it. Lives,
+## rubble and the power ladder carry over, which is what makes the ladder worth
+## climbing - dying is what ends a run and sends you back to street one.
+##
+## This exists because the first build shipped without it. `over` went true at
+## the end of street one, `advance()` returned early from then on, and the game
+## stopped dead with the HUD still showing - which is indistinguishable from a
+## crash to the person holding the phone. A known gap in NOTES.md is still a
+## blocker if the thing it is missing is the only way out of the screen.
+func next_street() -> void:
+	level += 1
+	distance = 0.0
+	x = 0.0
+	vx = 0.0
+	ax = 0.0
+	target_x = 0.0
+	theta = 0.0
+	omega = 0.0
+	hit_timer = 0.0
+	over = false
+	won = false
+	buildings.clear()
+	barricades.clear()
+	_chunk_spawned = -1
+
+
 ## One step. `dt` is seconds; the caller decides whether that came from a real
 ## frame or from a test stepping at a fixed rate, and the result is identical
 ## either way.

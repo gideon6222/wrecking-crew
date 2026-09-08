@@ -52,6 +52,7 @@ var _barricades: MultiMeshInstance3D
 var _debris: MultiMeshInstance3D
 
 var _hud: Label
+var _banner: Label
 var _readout: Label
 var _meter_back: ColorRect
 var _meter_fill: ColorRect
@@ -59,6 +60,12 @@ var _meter_fill: ColorRect
 var _dragging := false
 var _shake := 0.0
 var _hitstop := 0.0
+
+## Long enough to read what happened, short enough that it never feels like a
+## menu. The game is playable again on the other side of it without a tap.
+const INTERLUDE_SECONDS := 2.1
+var _interlude := 0.0
+var _interlude_won := false
 
 ## Cosmetic only. Each is {pos, vel, spin, ang, life, span, size}.
 ##
@@ -352,6 +359,20 @@ func _build_hud() -> void:
 	_meter_fill.color = Color(1.0, 0.72, 0.20)
 	layer.add_child(_meter_fill)
 
+	# Centred and large, because it is the only moment the game speaks to the
+	# player. It never blocks: it runs on its own timer and the next street
+	# starts without a tap.
+	_banner = Label.new()
+	_banner.position = Vector2(0, 720)
+	_banner.size = Vector2(1080, 130)
+	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_banner.add_theme_font_size_override("font_size", 84)
+	_banner.add_theme_color_override("font_color", Color(1.0, 0.86, 0.42))
+	_banner.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_banner.add_theme_constant_override("outline_size", 16)
+	_banner.visible = false
+	layer.add_child(_banner)
+
 	_hud = Label.new()
 	_hud.position = Vector2(46, 186)
 	_hud.add_theme_font_size_override("font_size", 34)
@@ -377,6 +398,7 @@ func _tick(dt: float) -> void:
 		_hitstop -= dt
 	else:
 		sim.advance(dt)
+	_advance_interlude(dt)
 	_advance_fx(dt)
 	_sync()
 
@@ -404,6 +426,7 @@ func freeze(start_level: int = 1) -> void:
 	_chunks.clear()
 	_shake = 0.0
 	_hitstop = 0.0
+	_interlude = 0.0
 	_sync()
 
 
@@ -430,10 +453,38 @@ func _on_rig_hit(x: float, z: float) -> void:
 	_hitstop = maxf(_hitstop, 0.08)
 
 
+## The end of a street, and the end of a run, are the only two ways the world
+## stops - so this is the only place that can start it again.
+##
+## The first build recorded the best haul here and did nothing else. `over` was
+## already true, so `advance()` returned early from that moment on and the game
+## sat frozen with a live HUD, which is indistinguishable from a crash to the
+## person holding the phone.
+##
+## Worth being precise about why no test caught it: every test in the suite
+## plays a street and reads the state at the end - which is exactly the instant
+## the bug begins. Nothing anywhere asked what happens NEXT.
 func _on_level_finished(won: bool) -> void:
 	best_rubble = maxi(best_rubble, sim.rubble)
 	best_street = maxi(best_street, sim.level)
 	_save()
+	_interlude = INTERLUDE_SECONDS
+	_interlude_won = won
+
+
+## Counts down whether or not the simulation is running, because the simulation
+## is precisely what is not running while it does.
+func _advance_interlude(dt: float) -> void:
+	if _interlude <= 0.0:
+		return
+	_interlude -= dt
+	if _interlude > 0.0:
+		return
+	if _interlude_won:
+		sim.next_street()
+	else:
+		sim.restart(1)
+	_chunks.clear()
 
 
 ## Debris comes off a SEEDED stream, not randf().
@@ -643,6 +694,12 @@ func _write_hud() -> void:
 	var frac: float = 0.0 if target <= 0 else clampf(float(sim.meter) / float(target), 0.0, 1.0)
 	_meter_fill.size.x = 356.0 * (1.0 if target <= 0 else frac)
 	_meter_fill.color = Color(0.45, 0.85, 0.45) if target <= 0 else Color(1.0, 0.72, 0.20)
+
+	if _interlude > 0.0:
+		_banner.text = ("STREET %d CLEARED" % sim.level) if _interlude_won else "RUN OVER"
+		_banner.visible = true
+	else:
+		_banner.visible = false
 
 	_hud.text = "STREET %d    LIVES %d    x%d POWER\nBEST %s on street %d\n%s" % [
 		sim.level, sim.lives, sim.power,

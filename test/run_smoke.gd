@@ -115,7 +115,55 @@ func _initialize() -> void:
 	_t.ok(main._readout.text == SimUtil.fmt(main.sim.rubble), "the rubble readout disagrees with the run")
 	_t.gt(main._meter_fill.size.x, 0.0, "the power meter never filled despite rubble being earned")
 
+	_check_the_street_can_be_left(main)
+
 	_finish()
+
+
+## The assertion the first build did not have, and the one that would have
+## caught the only bug Gideon hit.
+##
+## Reaching the end of a street sets `over`, and from that moment `advance()`
+## returns early. If nothing clears it the game sits frozen with a live HUD -
+## which on a phone is indistinguishable from a crash. Every other check here
+## plays a street and reads the state at the end, which is precisely the
+## instant the freeze starts, so the whole suite was blind to it.
+##
+## This drives the REAL scene rather than the simulation, because the thing
+## that was missing lived in the renderer's handler, not in Sim.
+func _check_the_street_can_be_left(main) -> void:
+	_t.begin("smoke > a finished street starts the next one")
+	main.freeze()
+	var mem := {}
+	var guard := 0
+	while not main.sim.over and guard < 6000:
+		Policies.steer(Policies.WRECKER, main.sim, mem)
+		main.advance(1.0 / 60.0, 1.0 / 60.0)
+		guard += 1
+	_t.eq(main.sim.over, true, "the street never ended")
+	_t.eq(main.sim.won, true, "the aiming policy did not finish street one")
+
+	# Annotated, not inferred. `main` is an untyped instantiated scene, so
+	# everything reached through it is a Variant and `:=` cannot infer from
+	# one - the same trap as reading a value out of a Dictionary.
+	var street: int = main.sim.level
+	var rubble: int = main.sim.rubble
+
+	# Halfway through the interlude the world is still held and the banner is
+	# up; the player is reading it.
+	main.advance(main.INTERLUDE_SECONDS * 0.5, 1.0 / 60.0)
+	_t.ok(main._banner.visible, "nothing on screen says the street was cleared")
+	_t.eq(main.sim.level, street, "the next street started before the banner was readable")
+
+	main.advance(main.INTERLUDE_SECONDS, 1.0 / 60.0)
+	_t.eq(main.sim.over, false,
+		"the game is still frozen after the interlude - this is the bug that shipped")
+	_t.eq(main.sim.level, street + 1, "the next street never started")
+	_t.eq(main.sim.rubble, rubble, "the haul was lost moving between streets")
+	_t.ok(not main._banner.visible, "the banner never went away")
+
+	main.advance(4.0, 1.0 / 60.0)
+	_t.gt(main.sim.distance, 30.0, "the next street does not move when the frame loop runs")
 
 
 ## The one test that catches inverted steering.

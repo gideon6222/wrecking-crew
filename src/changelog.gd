@@ -12,9 +12,19 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.1.0"
+const VERSION := "0.1.1"
 
 const RELEASES := [
+	{
+		"version": "0.1.1",
+		"date": "2026-09-08",
+		"title": "The street ends properly",
+		"notes": [
+			"Fixed: reaching the end of a street froze the game.",
+			"Clearing a street now rolls straight into the next one, keeping your haul, your power and your lives.",
+			"Running out of lives starts a fresh run from street one.",
+		],
+	},
 	{
 		"version": "0.1.0",
 		"date": "2026-09-08",

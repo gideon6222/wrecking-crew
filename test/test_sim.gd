@@ -272,3 +272,83 @@ func test_advancing_a_finished_run_changes_nothing(t: TestHarness) -> void:
 	var before := s.state()
 	_run(s, 5.0, 0.0)
 	t.dict_eq(s.state(), before, "a run that is over kept simulating")
+
+# --- what happens AFTER a street, which is where the first build froze ------
+
+func test_a_finished_street_can_be_continued(t: TestHarness) -> void:
+	# The bug this pins: `over` went true at the end of street one and nothing
+	# in the game could clear it, so `advance()` returned early forever and the
+	# phone showed a live HUD over a dead world.
+	#
+	# Every other test in this file plays a street and reads the state at the
+	# end - which is the exact instant the freeze began. The lesson is not
+	# "add a test for this"; it is that a suite which always stops where the
+	# content stops cannot see past the end of the content.
+	# Played, not passive. A passive run runs out of lives at about twelve
+	# seconds and never reaches the end of the street at all - so the first
+	# version of this test asserted the winning path against a run that had
+	# died, and reported the wrong thing twice.
+	var s := Sim.new()
+	var mem := {}
+	var guard := 0
+	while not s.over and guard < 6000:
+		Policies.steer(Policies.WRECKER, s, mem)
+		s.advance(STEP)
+		guard += 1
+	t.eq(s.over, true, "the street never finished")
+	t.eq(s.won, true, "reaching the end of the street was not recorded as a win")
+	t.gt(float(s.lives), 0.0, "the aiming policy died on street one")
+
+	var rubble_before := s.rubble
+	var power_before := s.power
+	var lives_before := s.lives
+
+	s.next_street()
+	t.eq(s.over, false, "the run is still over after moving to the next street")
+	t.eq(s.level, 2, "the street number did not advance")
+	t.approx(s.distance, 0.0, 0.0001, "the next street did not start at its beginning")
+	t.approx(s.theta, 0.0, 0.0001, "the ball carried its swing into the next street")
+
+	# The run owns these; the street does not.
+	t.eq(s.rubble, rubble_before, "rubble was lost between streets")
+	t.eq(s.power, power_before, "the power ladder reset between streets")
+	t.eq(s.lives, lives_before, "lives were restored for free between streets")
+
+	# And it must actually play.
+	for i in 360:
+		Policies.steer(Policies.WRECKER, s, mem)
+		s.advance(STEP)
+	t.gt(s.distance, 40.0, "the next street does not advance when stepped")
+
+
+func test_a_dead_run_restarts_from_the_first_street(t: TestHarness) -> void:
+	var s := Sim.new()
+	_run(s, 40.0, 0.0)
+	t.eq(s.over, true, "the run did not end")
+	s.restart(1)
+	t.eq(s.over, false, "restarting left the run over")
+	t.eq(s.level, 1, "a dead run did not go back to street one")
+	t.eq(s.lives, Tuning.START_LIVES, "a fresh run did not get its lives back")
+	t.eq(s.rubble, 0, "a fresh run kept the last run's rubble")
+	t.eq(s.power, Tuning.POWER_START, "a fresh run kept the last run's power")
+	_run(s, 6.0)
+	t.gt(s.distance, 40.0, "a restarted run does not advance when stepped")
+
+
+func test_several_streets_can_be_played_back_to_back(t: TestHarness) -> void:
+	# The ladder, end to end. A street that cannot be left is a game with one
+	# street in it however many are generated.
+	var s := Sim.new()
+	var mem := {}
+	for street in 4:
+		var guard := 0
+		while not s.over and guard < 6000:
+			Policies.steer(Policies.WRECKER, s, mem)
+			s.advance(STEP)
+			guard += 1
+		t.eq(s.over, true, "street %d never ended" % (street + 1))
+		if s.lives <= 0:
+			break
+		s.next_street()
+		mem.clear()
+	t.gt(float(s.level), 1.0, "the run never got past the first street")
