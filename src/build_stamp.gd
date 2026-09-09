@@ -11,8 +11,8 @@ extends RefCounted
 ## game is meant to look identical between builds. The changelog answers "what
 ## changed" - different question, and both are wanted in the same place.
 
-const SHA := "82754b9+"
-const BUILT := "2026-09-09 00:30 UTC"
+const SHA := "569c551+"
+const BUILT := "2026-09-09 01:03 UTC"
 
 
 ## Deliberately ASCII-only, as belt and braces.

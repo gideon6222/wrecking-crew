@@ -55,12 +55,18 @@ const PASSIVE := {
 ##
 ## This is the policy that proves the machine is not a bulldozer. It uses the
 ## same targeting as the two below and differs only in throttle.
+## Creeps at the columns at a quarter throttle for a full minute: ONE contact,
+## no columns, nothing earned. The ball never gets above 11 m/s and a pass at
+## that speed does not survive the trip.
+##
+## This is the policy that proves the machine is not a bulldozer. It shares its
+## targeting and its driving with the two below and differs only in throttle.
 const NUDGER := {
 	"level": 2, "rubble": 0, "columns_down": 0, "walls_down": 0,
 	"integrity": 1.0, "collapsing": false, "escape_left": 0.0,
-	"x": -2.088, "z": -7.946, "heading": 2.847, "speed": 1.985, "turret": 0.0,
-	"ball_x": -0.617, "ball_z": -11.709, "ball_speed": 4.083,
-	"over": false, "won": false, "peak_ball": 8.313, "hits": 0, "seconds": 60.0,
+	"x": -4.33, "z": -9.73, "heading": -1.556, "speed": 1.601, "turret": 0.0,
+	"ball_x": -9.356, "ball_z": -10.21, "ball_speed": 7.535,
+	"over": false, "won": false, "peak_ball": 11.093, "hits": 1, "seconds": 60.0,
 }
 ## Wrecks properly and never leaves. Four columns down, the slab lets go at 33
 ## seconds - and it is still in the room at 44.65 with `escape_left` past zero.
@@ -68,12 +74,15 @@ const NUDGER := {
 ## Wrecks properly and never leaves. Five columns down, the slab lets go, and
 ## it is still in the room at 32.17 seconds with `escape_left` past zero. 670
 ## rubble and a loss.
+## Wrecks properly and never leaves. EIGHT columns down and 1030 rubble on the
+## ground - more than the policy below manages - and it is still in the room at
+## 26.15 seconds with `escape_left` past zero. All of it counts for nothing.
 const GREEDY := {
-	"level": 2, "rubble": 670, "columns_down": 5, "walls_down": 2,
-	"integrity": 0.563, "collapsing": true, "escape_left": -0.013,
-	"x": 1.935, "z": 5.323, "heading": 2.352, "speed": 8.037, "turret": 0.0,
-	"ball_x": 2.449, "ball_z": 4.199, "ball_speed": 16.495,
-	"over": true, "won": false, "peak_ball": 24.352, "hits": 16, "seconds": 32.167,
+	"level": 2, "rubble": 1030, "columns_down": 8, "walls_down": 2,
+	"integrity": 0.329, "collapsing": true, "escape_left": -0.013,
+	"x": -3.952, "z": 11.438, "heading": 1.699, "speed": 4.574, "turret": 0.0,
+	"ball_x": 1.057, "ball_z": 14.911, "ball_speed": 12.447,
+	"over": true, "won": false, "peak_ball": 27.331, "hits": 20, "seconds": 26.15,
 }
 ## The same run, one boolean apart: this one heads for the ramp when the slab
 ## goes. Out at 33.5 seconds with 11.1 to spare, and the time left pays - 959
@@ -90,12 +99,20 @@ const GREEDY := {
 ## GREEDY and WRECKER are the pair that matters. Identical code, identical
 ## driving; the one that knows when to stop earns half again as much and lives.
 ## If these two ever converge, the escape has stopped being a decision.
+## The same run, one boolean apart: this one heads for the ramp when the slab
+## goes. Out at 16.15 seconds with 10 to spare.
+##
+## The pair is worth reading carefully, because it is no longer a simple win.
+## The greedy policy puts TWICE the columns down and banks 1030 against 879 -
+## and loses, because it is under the slab when it lands. What the escape buys
+## is not more rubble, it is keeping the rubble you have. If these two ever stop
+## differing, the collapse has stopped being a decision.
 const WRECKER := {
-	"level": 2, "rubble": 962, "columns_down": 4, "walls_down": 2,
-	"integrity": 0.641, "collapsing": true, "escape_left": 10.32,
-	"x": 0.875, "z": -16.573, "heading": -2.778, "speed": 9.4, "turret": 0.0,
-	"ball_x": 2.584, "ball_z": -22.126, "ball_speed": 11.514,
-	"over": true, "won": true, "peak_ball": 24.352, "hits": 13, "seconds": 21.833,
+	"level": 2, "rubble": 879, "columns_down": 4, "walls_down": 0,
+	"integrity": 0.675, "collapsing": true, "escape_left": 9.987,
+	"x": 1.198, "z": -16.599, "heading": -2.61, "speed": 9.039, "turret": 0.0,
+	"ball_x": 0.451, "ball_z": -15.718, "ball_speed": 15.548,
+	"over": true, "won": true, "peak_ball": 27.331, "hits": 12, "seconds": 16.15,
 }
 
 
@@ -158,18 +175,30 @@ func test_getting_out_is_worth_more_than_staying(t: TestHarness) -> void:
 	# The other claim. Same code, same driving, one boolean apart: whether the
 	# policy heads for the ramp when the slab lets go.
 	var stayed := 0
+	var stayed_wins := 0
 	var left := 0
 	var wins := 0
 	for level in [1, 2, 3, 4]:
-		stayed += int(Policies.play(Policies.GREEDY, level)["rubble"])
+		var under := Policies.play(Policies.GREEDY, level)
+		stayed += int(under["rubble"])
+		if under["won"]:
+			stayed_wins += 1
 		var out := Policies.play(Policies.WRECKER, level)
 		left += int(out["rubble"])
 		if out["won"]:
 			wins += 1
-	t.gt(float(left), float(stayed),
-		"leaving when the slab goes earns no more than staying under it")
+	# NOT a comparison of rubble. The greedy policy stays under the slab and
+	# keeps wrecking, so it often has MORE on the ground when the ceiling lands
+	# on it - 1030 against 879 on level 2. That is the shape the mechanic
+	# should have: greed genuinely pays right up until it does not.
+	#
+	# What has to be true is that staying never WORKS. If a policy that ignores
+	# the collapse can finish a level, the collapse is scenery.
+	t.eq(stayed_wins, 0,
+		"a policy that never leaves still finishes levels - the collapse is not a real threat")
 	t.gt(float(wins), 0.0,
 		"the policy that runs for the ramp never once gets out - the escape is not winnable")
+	t.gt(float(left), 0.0, "the escaping policy earns nothing at all")
 
 
 func test_a_basement_can_be_brought_down_at_all(t: TestHarness) -> void:

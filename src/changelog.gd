@@ -12,9 +12,19 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.4.1"
+const VERSION := "0.4.2"
 
 const RELEASES := [
+	{
+		"version": "0.4.2",
+		"date": "2026-09-09",
+		"title": "It drives like tracks now",
+		"notes": [
+			"Hold a direction and the machine pivots on the spot to face it, then drives off in a straight line.",
+			"No throttle at all until it is pointing roughly the right way, so a change of direction is a turn and not a curve.",
+			"Much quicker on the spot, much lazier once moving - which is how anything on tracks actually behaves.",
+		],
+	},
 	{
 		"version": "0.4.1",
 		"date": "2026-09-09",

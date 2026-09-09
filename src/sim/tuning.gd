@@ -47,18 +47,36 @@ const DRIVE_MAX := 9.5
 const DRIVE_DRAG := 2.4           ## per second, when the stick is released
 const DRIVE_REVERSE := 0.45       ## fraction of forward speed, going backwards
 
-## How fast the machine comes round to the direction the stick is pushed.
+## A TRACKED machine: it pivots on the spot, and once it is pointing somewhere
+## it drives in a straight line. It does not carve.
 ##
-## Turning is speed-dependent, the way a tracked machine turns - but only
-## mildly, and that mildness is load bearing.
+## This is the shape Gideon asked for after the last build - "it doesn't seem
+## locked to move forward and backward, it seems to drift... if you hold right,
+## it should automatically rotate itself to face right, then start moving in
+## that direction" - and he was describing a real fault. The machine was always
+## locked to its own heading; what it was not doing was PIVOTING. It kept 45%
+## of its throttle through even a 180-degree correction, so every change of
+## direction came out as a long curving arc. A vehicle sweeping a curve while
+## the camera holds still reads as sliding, whatever the maths underneath says.
 ##
-## At 2.5 rad/s on the spot, spinning in place whipped the ball at 24 m/s while
-## driving flat out only managed 9.5 - so the best strategy was to stand still
-## and rotate, which is neither what the game is about nor any fun. The two
-## numbers now put a fast pass with a turn at about 19 m/s against a standing
-## spin at 12, so driving is the technique and spinning is the fallback.
-const TURN_RATE := 1.2            ## radians per second at a standstill
-const TURN_AT_SPEED := 0.8        ## multiplier once at DRIVE_MAX
+## Fast on the spot, and much slower once moving - which is what makes a change
+## of direction a deliberate stop-and-turn rather than a drift.
+const TURN_RATE := 2.3            ## radians per second at a standstill
+const TURN_AT_SPEED := 0.35       ## multiplier once at DRIVE_MAX
+
+## The cone the machine has to be pointing within before it applies any
+## throttle at all. Outside it, the tracks counter-rotate and nothing else
+## happens; inside, the throttle ramps in as the nose comes round.
+##
+## This one constant is the difference between a tracked machine and a car. At
+## a 45% floor - which is what it had - the machine drove through its own turns
+## and the path was a curve; at zero it stops, turns, and goes.
+const ALIGN_CONE := 0.65          ## radians, about 37 degrees
+
+## How tight the last of the turn is. Full counter-rotation until roughly
+## within this, then eased, so the nose settles on the bearing instead of
+## hunting either side of it.
+const TURN_SETTLE := 0.22         ## radians
 
 ## Dead zone on the drive stick. Without one a virtual stick reads every
 ## tremor and the machine wanders; this is the single most-cited fix for touch

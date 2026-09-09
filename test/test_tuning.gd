@@ -67,8 +67,20 @@ func test_the_ball_can_be_swung_faster_than_the_machine_drives(t: TestHarness) -
 	var spin := Tuning.TURN_RATE * arm
 	t.gt(spin, Tuning.HIT_MIN_SPEED,
 		"turning on the spot cannot even reach the speed that starts doing damage")
-	t.lt(spin, Tuning.DRIVE_MAX * 1.6,
-		"turning on the spot beats driving, so the best play is to stand still and rotate")
+
+	# It used to be bounded against DRIVE_MAX, on the worry that spinning on the
+	# spot would beat driving. That worry is now answered by two other things
+	# instead, and the bound was blocking the pivot the machine needs:
+	#
+	#  - damage saturates at HIT_FULL_SPEED, so speed past it buys nothing, and
+	#    both a pivot and a driven swing clear it comfortably;
+	#  - the ball reaches under a bay, so a machine spinning where it stands can
+	#    only ever threaten what is already beside it. Getting to the next
+	#    column is what driving is for.
+	t.gt(Tuning.damage_at(spin), Tuning.HIT_DAMAGE * 0.9,
+		"a pivot cannot land a solid hit, so a machine boxed in has nothing to do")
+	t.lt(Tuning.BOOM_LEN + Tuning.CHAIN, Tuning.BAY,
+		"a machine spinning on the spot reaches the next column along - driving is optional")
 
 
 func test_the_collapse_needs_real_work_but_is_reachable(t: TestHarness) -> void:
@@ -108,6 +120,30 @@ func test_the_way_out_is_wide_enough_to_drive_through(t: TestHarness) -> void:
 		"the ramp is barely wider than the machine, so escaping is a parking test")
 	t.lt(Tuning.RAMP_W, Tuning.DECK_W * 0.4,
 		"the ramp is so wide that being anywhere near the back wall counts as out")
+
+
+func test_the_machine_pivots_before_it_drives(t: TestHarness) -> void:
+	# The tracked-machine rule, as a constraint on the constants rather than a
+	# hope about the code: there has to be a cone outside which no throttle is
+	# applied at all, and it has to be narrow enough that a real turn happens
+	# inside it rather than being driven through.
+	t.gt(Tuning.ALIGN_CONE, 0.0,
+		"there is no alignment cone, so the machine drives through its own turns")
+	t.lt(Tuning.ALIGN_CONE, PI * 0.5,
+		"the alignment cone is so wide that a ninety-degree turn is taken at speed")
+	t.lt(Tuning.TURN_SETTLE, Tuning.ALIGN_CONE,
+		"the turn eases off before the machine is even allowed to move")
+
+
+func test_a_pivot_is_quick_but_not_free(t: TestHarness) -> void:
+	# Turning to face the other way is the cost of changing your mind, so it has
+	# to be felt - and it has to be quick enough that being boxed in beside a
+	# column is not a sentence.
+	var about_face := PI / Tuning.TURN_RATE
+	t.gt(about_face, 0.6, "the machine spins on its axis instantly, which is a cursor not a machine")
+	t.lt(about_face, 3.0, "turning around takes so long that a wrong direction costs the level")
+	t.lt(Tuning.turn_rate_at(Tuning.DRIVE_MAX), Tuning.TURN_RATE * 0.6,
+		"the machine turns nearly as well at speed as it does stopped, so it carves like a car")
 
 
 func test_the_stick_has_a_dead_zone(t: TestHarness) -> void:

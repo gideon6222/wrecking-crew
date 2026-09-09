@@ -69,6 +69,63 @@ func _top_speed(throttle: float) -> float:
 	return peak
 
 
+func test_the_machine_pivots_before_it_drives(t: TestHarness) -> void:
+	# The behaviour Gideon asked for, driven end to end: "if you hold right, it
+	# should automatically rotate itself to face right, then start moving in
+	# that direction."
+	#
+	# Get it up to speed going one way, then ask for a right angle. The speed
+	# has to COLLAPSE while it comes round - that is the pivot - and then build
+	# again once it is pointing the new way. Without that it sweeps a curve, and
+	# a curve under a camera that holds still reads as the machine sliding.
+	var s := Sim.new()
+	for i in int(round(2.5 / STEP)):
+		s.drive_dir(Vector2(0.0, 1.0), 1.0)
+		s.advance(STEP)
+	var cruising := s.speed
+	t.gt(cruising, 4.0, "the machine never got up to speed in the first place")
+
+	var slowest := cruising
+	var turned := false
+	for i in int(round(3.0 / STEP)):
+		s.drive_dir(Vector2(1.0, 0.0), 1.0)
+		s.advance(STEP)
+		slowest = minf(slowest, s.speed)
+		if absf(wrapf(PI * 0.5 - s.heading, -PI, PI)) < 0.15:
+			turned = true
+
+	t.ok(turned, "the machine never came round to the direction it was sent")
+	t.lt(slowest, cruising * 0.35,
+		"the machine kept most of its speed through a right angle - it is carving, not pivoting")
+	t.gt(s.speed, cruising * 0.6, "the machine never picked up again after the turn")
+
+
+func test_a_machine_on_tracks_only_moves_along_its_heading(t: TestHarness) -> void:
+	# No lateral component at all, ever. This is what "locked to forward and
+	# backward" means, and it is worth pinning even though the integration makes
+	# it true by construction - because the moment anything adds a sideways
+	# impulse for feel, this is the test that says what was lost.
+	var s := Sim.new()
+	for i in int(round(6.0 / STEP)):
+		s.drive_dir(Vector2(sin(s.time * 1.9), cos(s.time * 1.3)), 1.0)
+		var before := s.pos
+		s.advance(STEP)
+		# Skip any step where the machine was against a wall. `_clamp_to_deck`
+		# writes the position directly, which IS a sideways displacement - and a
+		# correct one, since the alternative is driving through concrete. The
+		# first version of this test did not exclude it and reported the machine
+		# sliding almost entirely sideways, which was the wall doing its job.
+		if absf(s.pos.x) > Tuning.DECK_W * 0.5 - Tuning.RIG_RADIUS - 0.2:
+			continue
+		if absf(s.pos.y) > Tuning.DECK_D * 0.5 - Tuning.RIG_RADIUS - 0.2:
+			continue
+		var moved := s.pos - before
+		if moved.length() < 0.0001:
+			continue
+		var sideways := absf(moved.normalized().dot(Vector2(cos(s.heading), -sin(s.heading))))
+		t.lt(sideways, 0.02, "the machine moved sideways relative to the way it is facing")
+
+
 func test_the_machine_coasts_to_a_stop(t: TestHarness) -> void:
 	var s := Sim.new()
 	_run(s, 3.0, 1.0)

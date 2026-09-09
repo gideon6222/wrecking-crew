@@ -239,12 +239,21 @@ func drive_dir(dir: Vector2, power: float) -> void:
 		return
 	var want := atan2(dir.x, dir.y)
 	var err := wrapf(want - heading, -PI, PI)
-	# Turn toward it, and ease off the throttle while the turn is hard - which
-	# is how anyone drives, and matters mechanically because the turn rate
-	# falls away with speed.
-	var turn := clampf(err * 2.6, -1.0, 1.0)
-	var ease: float = 1.0 - 0.55 * clampf(absf(err) / PI, 0.0, 1.0)
-	drive(power * ease, turn)
+
+	# Counter-rotate at full lock until the nose is nearly on the bearing, then
+	# ease so it settles instead of hunting.
+	var turn := clampf(err / Tuning.TURN_SETTLE, -1.0, 1.0)
+
+	# And NO throttle until the machine is pointing roughly where it is being
+	# sent. This is the whole difference between a tracked machine and a car:
+	# outside the cone the tracks counter-rotate and nothing else happens, so a
+	# change of direction is a pivot rather than an arc.
+	#
+	# It had a floor of 45% here, so the machine drove through its own turns and
+	# every correction came out as a long curve - which, under a camera that
+	# holds still, reads as the machine sliding sideways.
+	var align: float = 1.0 - clampf(absf(err) / Tuning.ALIGN_CONE, 0.0, 1.0)
+	drive(power * align, turn)
 
 
 ## The low-level seam, still here because the tests and the collision model are
