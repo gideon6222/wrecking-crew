@@ -8,210 +8,219 @@ extends RefCounted
 ## shape of the curves - which is what a balance change accidentally breaks -
 ## without booting a game.
 ##
-## The game in one sentence: you are parked in front of a condemned building
-## with a wrecking crane and a fixed number of swings, and you have to bring it
-## down INTO ITS OWN FOOTPRINT rather than onto the block next door.
+## The game in one sentence: you are in the basement of a condemned tower with
+## a wrecking machine, and you take out the columns holding it up until it
+## starts coming down - and then you have to get out.
 
-# --- the site -------------------------------------------------------------
+# --- the deck -------------------------------------------------------------
+#
+# A parking level: a grid of columns under a slab, with infill walls between
+# some of them and a ramp out at one end. Everything is on one storey, because
+# the player never leaves the floor they are standing on.
 
-## The building stands in bays across the front. Knocking a bay's column out
-## drops that bay's stack; the ORDER you do it in is the whole game, because
-## every stack that falls shifts the load and the remainder leans.
-## Wide enough that a big building is wider than the crane's reach from one
-## spot. That is the whole reason the crane can move: at 2.6 every bay of every
-## building was reachable from the middle, so parking was decoration and a
-## policy that never moved scored identically to one that worked the site
-## properly. Measured, on all four policies, at all six levels.
-const BAY_WIDTH := 3.2
-const FLOOR_HEIGHT := 3.1
-const FACE_Z := 6.0               ## the near face of the building
-const BUILDING_DEPTH := 5.2
+const DECK_W := 38.0              ## across
+const DECK_D := 33.0              ## front to back
+const CEILING := 4.6              ## slab soffit height
+const WALL_MARGIN := 1.2          ## how far the perimeter sits outside the grid
 
-const BAYS_MIN := 3
-const BAYS_MAX := 7
-const FLOORS_MIN := 4
-const FLOORS_MAX := 9
+## Twelve columns, not twenty. At twenty, the best bot took down nine in two
+## minutes and never reached the threshold that starts the collapse - so the
+## level had no ending in it, which is a content decision masquerading as a
+## balance one. Twelve makes a basement about a minute of work.
+const GRID_X := 4                 ## columns across
+const GRID_Z := 3                 ## columns deep
+const BAY := 8.6                  ## metres between column centres
+
+const COLUMN_RADIUS := 0.62
+const WALL_THICK := 0.45
+
+## The way out. A demolition where you cannot be caught by the thing you
+## started is a sandbox; this is the corner that turns it into a run.
+const RAMP_W := 7.0
+const RAMP_DEPTH := 5.0
+
+# --- the machine ----------------------------------------------------------
+
+const RIG_RADIUS := 1.5
+const DRIVE_ACCEL := 13.0         ## metres per second per second
+const DRIVE_MAX := 9.5
+const DRIVE_DRAG := 2.4           ## per second, when the stick is released
+const DRIVE_REVERSE := 0.45       ## fraction of forward speed, going backwards
+
+## Turning is speed-dependent, the way a tracked machine turns - but only
+## mildly, and that mildness is load bearing.
+##
+## At 2.5 rad/s on the spot, spinning in place whipped the ball at 24 m/s while
+## driving flat out only managed 9.5 - so the best strategy was to stand still
+## and rotate, which is neither what the game is about nor any fun. The two
+## numbers now put a fast pass with a turn at about 19 m/s against a standing
+## spin at 12, so driving is the technique and spinning is the fallback.
+const TURN_RATE := 1.2            ## radians per second at a standstill
+const TURN_AT_SPEED := 0.8        ## multiplier once at DRIVE_MAX
+
+## Dead zone on the drive stick. Without one a virtual stick reads every
+## tremor and the machine wanders; this is the single most-cited fix for touch
+## controls feeling twitchy.
+const STICK_DEADZONE := 0.14
 
 # --- the crane ------------------------------------------------------------
 #
-# Unchanged from the street version, deliberately. The control is the part of
-# that build that was working: the turret slews to where the thumb drags, the
-# ball trails the boom as an underdamped spring, and reach comes from how fast
-# the ball is travelling round rather than from where the boom points.
-# Pointing at a column is not enough - the ball has to be moving.
+# The boom slews on the machine, and the ball hangs from its tip on a chain
+# that cannot stretch. Nothing pulls the ball toward a target - it goes where
+# momentum takes it, and the ONLY way to move it is to move the thing it is
+# attached to. That is the whole feel of the game: the vehicle is the wind-up.
 
-const BOOM := 3.2                 ## turret to ball at rest
-const PIVOT_Y := 6.4
-const BALL_RADIUS := 1.05
+const BOOM_LEN := 4.6             ## turret to boom tip
+const BOOM_HEIGHT := 5.4
+const CHAIN := 5.2                ## boom tip to ball, and it does not stretch
+const BALL_RADIUS := 1.0
 
-const YAW_MAX := 1.18             ## radians either side of straight ahead
-const YAW_GAIN := 3.2
-const MAX_SLEW := 2.7
-const YAW_RATE := 9.0
+## A guard, not a mechanic. The chain is solved as a position constraint and a
+## position constraint can inject energy if anything moves the ball without
+## that motion being accounted for - which happened, and measured 216 m/s on a
+## machine that cannot exceed 9.5. The velocity is now derived from actual
+## displacement so it cannot happen by construction, and this exists purely so
+## that if it ever does, it fails loudly at a number a test can catch rather
+## than quietly making a crawling policy the best one in the game.
+const BALL_MAX_SPEED := 34.0
 
-const BALL_PULL := 9.0            ## the ball's spring toward the boom
-const BALL_DAMP := 1.55           ## underdamped: it arrives late and swings past
+const TURRET_MAX := 2.35          ## radians either side of straight ahead
+const TURRET_GAIN := 3.4
+const TURRET_SLEW := 1.7          ## radians per second
+const TURRET_RATE := 9.0
 
-const RADIUS_GAIN := 0.62         ## metres of reach per rad/s of bearing speed
-const RADIUS_RATE := 7.0
-const RADIUS_MAX := 8.6
+## What the chain does when it goes taut. Some of the ball's outward speed is
+## returned rather than absorbed, which is what makes a hard turn crack the
+## ball out sideways instead of just dragging it.
+const CHAIN_BOUNCE := 0.22
+const BALL_DRAG := 0.55           ## per second, so a swing dies if left alone
+const BALL_SETTLE := 1.1          ## weak pull back under the tip
 
-const REBOUND := 0.70
-const REBOUND_MIN := 1.75
+# --- breaking things ------------------------------------------------------
 
-## How wide a column is to hit. Tight on purpose: at half a bay width plus the
-## ball, the ball landed anywhere in the bay and counted, so being roughly
-## right was as good as being right and there was nothing to aim at.
-const COLUMN_HALF_WIDTH := 0.55
+## Damage is the ball's SPEED, not a hit count. A ball drifting into a column
+## does nothing; one whipped round at ten metres a second takes a chunk out.
+## That is the whole reason the chain is inextensible and the vehicle drives
+## freely - both exist to let the player build speed.
+const HIT_MIN_SPEED := 3.2        ## below this the ball just clunks
+const HIT_FULL_SPEED := 13.0      ## at and above this, maximum damage
+## Per target, so a single pass through a column is a hit rather than one per
+## frame - which would make damage a function of the frame rate, the one thing
+## a golden cannot survive. Short enough that a slow orbit round one column
+## lands several.
+const HIT_COOLDOWN := 0.16
 
-## A ball drifting into a column does nothing; a swinging one breaks it. This
-## is what stops the crane being a cursor, and it is the same constant that
-## stopped a hanging ball clearing barricades in the street build - kept
-## because it was doing real work there.
-const STRIKE_MIN_SWING := 0.9     ## rad/s of |bearing_vel| needed to land a strike
-const STRIKE_COOLDOWN := 0.35     ## seconds before the same column can be hit again
+const COLUMN_HP := 40.0
+const WALL_HP := 24.0
+const HIT_DAMAGE := 60.0          ## at HIT_FULL_SPEED
 
-# --- the crane's own position ---------------------------------------------
-
-## The crane can reposition along the site, and that is what the swipe does.
-## It is not decoration: the outer bays of a wide building cannot be reached
-## from the middle, so where you park is a decision made several times a demo.
-const LANES := [-4.2, 0.0, 4.2]
-const START_LANE := 1
-const RIG_HALF_WIDTH := 1.1
-const STEER_GAIN := 3.4
-const MAX_STEER_SPEED := 7.5
-const STEER_RATE := 11.0
-
-# --- what a demolition costs and pays -------------------------------------
-
-## Swings are the whole risk. A wasted strike is one you do not have for the
-## column you needed it on, and running out with the building still standing is
-## how a demo fails - rather than by any hazard, which is what the street
-## version was missing.
+## What each thing was carrying. A column holds the slab up; a wall panel is
+## mostly infill and barely does - so both are worth breaking, but only one of
+## them really moves the gauge, and the player learns which by watching rather
+## than by being told.
 ##
-## The budget is DERIVED from the building rather than set as a rate. It was a
-## flat 3 per bay, which happened to be less than the columns actually needed
-## once they varied and grew with the level: at five bays of four hit points it
-## gave 17 swings for a job needing 20, so the last two buildings were
-## arithmetically unwinnable however well they were played. A budget that has
-## to be kept in step with the content by hand will drift out of step with it.
+## WALL_CAPACITY was defined and then never read for one build: `integrity`
+## counted columns only. A constant that exists and does nothing is worse than
+## no constant, because it reads as a decision that was made.
+const COLUMN_CAPACITY := 1.0
+const WALL_CAPACITY := 0.22
+
+const COLUMN_RUBBLE := 120
+const WALL_RUBBLE := 35
+
+# --- coming down ----------------------------------------------------------
+
+## How much of the original support has to go before the slab lets go.
 ##
-## So: exactly enough to break every column, plus a few. The margin IS the
-## difficulty, and it is the same margin at every size.
-const SWINGS_SPARE := 4
+## 0.45 for one measured build, which needed seven of twelve columns down - and
+## the best policy managed five in two and a half minutes, so no level ever
+## reached its own ending. A threshold no one can cross is not difficulty, it
+## is a level with no exit. At 0.6 it takes five, which is also about what
+## losing forty per cent of your columns would really do to a building.
+const COLLAPSE_AT := 0.7
 
-## Columns are NOT all the same, and that is a design decision rather than
-## flavour. With every column identical, sweeping the boom symmetrically across
-## the front produces a symmetric collapse by accident - so a policy that never
-## looked at the building scored higher than one that worked it properly.
-## Varying them means the weak bays fall wherever they happen to be, and the
-## player has to choose which column to work and, more interestingly, which one
-## to LEAVE because dropping it now would unbalance the rest.
-const COLUMN_HP_BASE := 2
-const COLUMN_HP_SPREAD := 2       ## extra hp a column may have, 0 to this
-const RUBBLE_PER_FLOOR := 10
-const CLEAN_DROP_BONUS := 250     ## for putting all of it inside the footprint
-const SWING_SAVED_BONUS := 25     ## per swing not needed
+## Seconds to reach the ramp once it starts. Measured against the diagonal of
+## the deck at full speed - see escape_margin(), which is asserted rather than
+## eyeballed, because "can the player actually get out" is the one number that
+## turns this from a tense run into an unfair one.
+const ESCAPE_SECONDS := 13.0
 
-# --- leaning, which is the thing that goes wrong --------------------------
+const ESCAPE_BONUS_PER_SECOND := 40
+const TOTAL_TEARDOWN_BONUS := 400  ## for taking every column out before leaving
 
-## Every stack that falls shifts the load toward the side it fell on. Drop the
-## bays down one side and the remainder leans until it goes over, onto the
-## block next door, and the demo is a failure however much came down.
+# --- how it scales --------------------------------------------------------
+
+const LEVEL_HP_STEP := 1.14       ## columns get tougher
+const LEVEL_ESCAPE_STEP := 0.94   ## and the way out gets tighter
+
+
+static func column_hp_for(level: int) -> float:
+	return COLUMN_HP * pow(LEVEL_HP_STEP, level - 1)
+
+
+static func wall_hp_for(level: int) -> float:
+	return WALL_HP * pow(LEVEL_HP_STEP, level - 1)
+
+
+static func escape_seconds_for(level: int) -> float:
+	return maxf(7.0, ESCAPE_SECONDS * pow(LEVEL_ESCAPE_STEP, level - 1))
+
+
+## Where a column stands. The grid is centred on the deck.
+static func column_x(col: int) -> float:
+	return (float(col) - float(GRID_X - 1) * 0.5) * BAY
+
+
+static func column_z(row: int) -> float:
+	return (float(row) - float(GRID_Z - 1) * 0.5) * BAY
+
+
+## The middle of the ramp mouth, at the back of the deck.
+static func ramp_z() -> float:
+	return -DECK_D * 0.5
+
+
+## Damage from a given impact speed, 0 to HIT_DAMAGE.
 ##
-## The gauge on the HUD is a direct reading of this number rather than a scaled
-## one, because a gauge that has to be explained is a gauge that gets ignored.
-##
-## Both limits are derived, not chosen. With bays at even spacing the centroid of what is
-## still standing can only take a handful of values, so these were solved
-## against them rather than picked:
-##
-##   3 bays, one outer gone   -> 0.50   under the limit: street one is safe
-##   5 bays, three down one side -> 0.75   over it: a one-sided demo kills you
-##   7 bays, five down one side  -> 0.83   over it
-##   any width, worked alternately -> 0.00 clean
-##
-## So 0.72 is the smallest number that punishes working along one side at five
-## bays while leaving the three-bay building survivable, and 0.45 is under the
-## 0.50 that a single outer drop costs - which is what makes "start in the
-## middle" a real decision on the very first building.
-const TOPPLE_LIMIT := 0.72
-const LEAN_WARN := 0.45           ## a clean drop never goes above this
-
-## How quickly a lean settles as the load re-centres. Not instant, and not
-## never: a building that forgives nothing turns the first bad swing into a
-## finished run, and a gauge you cannot steer back from is a death sentence
-## with a delay rather than a decision.
-const LEAN_SETTLE := 2.2          ## per second, toward the current imbalance
-
-
-static func bays_for(level: int) -> int:
-	return clampi(BAYS_MIN + (level - 1) / 2, BAYS_MIN, BAYS_MAX)
-
-
-static func floors_for(level: int) -> int:
-	return clampi(FLOORS_MIN + (level - 1), FLOORS_MIN, FLOORS_MAX)
-
-
-static func column_hp_for(level: int) -> int:
-	return COLUMN_HP_BASE + (level - 1) / 3
-
-
-## This bay's column, which is keyed on the place so a given building is the
-## same building every time it is played, on any device.
-static func column_hp_at(level: int, bay: int) -> int:
-	var roll := SimUtil.hash2(bay, 701 + level)
-	return column_hp_for(level) + int(floor(roll * float(COLUMN_HP_SPREAD + 1)))
-
-
-## The swing budget: exactly what this building's columns need, plus the spare.
-## Never a rate - see the note beside SWINGS_SPARE for what that cost.
-static func swings_for(level: int) -> int:
-	var needed := 0
-	for b in bays_for(level):
-		needed += column_hp_at(level, b)
-	return needed + SWINGS_SPARE
-
-
-## Half the building's width, which is the arm the lean is measured against.
-static func half_width(level: int) -> float:
-	return maxf(BAY_WIDTH, float(bays_for(level) - 1) * 0.5 * BAY_WIDTH)
-
-
-## Where a bay's centre sits, left to right.
-static func bay_x(level: int, bay: int) -> float:
-	return (float(bay) - float(bays_for(level) - 1) * 0.5) * BAY_WIDTH
-
-
-## The ball's natural period against the boom. A quarter of it is how long
-## after a slew the ball reaches its extreme - the lag the player leads, and
-## the single number that decides how this feels.
-static func swing_period() -> float:
-	return TAU / sqrt(BALL_PULL)
-
-
-static func ball_lag() -> float:
-	return swing_period() * 0.25
-
-
-## How far sideways the ball can get, from the outermost parking spot.
-static func max_ball_reach() -> float:
-	return absf(LANES[LANES.size() - 1]) + RADIUS_MAX * sin(YAW_MAX)
-
-
-## The ball has to get PAST the face to touch a column, and its distance from
-## the crane falls away as it swings round - so reach across the front and
-## reach into the building trade against each other. This is the furthest
-## sideways the ball can be while still deep enough to strike, and it is the
-## number that decides whether the widest building is playable at all.
-static func reach_at_face() -> float:
-	if RADIUS_MAX <= FACE_Z:
+## Ramped rather than thresholded: a glancing blow should do something, or the
+## player cannot tell a near miss from a miss. Squared, so the difference
+## between a lazy swing and a committed one is felt rather than merely counted.
+static func damage_at(speed: float) -> float:
+	if speed <= HIT_MIN_SPEED:
 		return 0.0
-	return sqrt(RADIUS_MAX * RADIUS_MAX - FACE_Z * FACE_Z)
+	var t := clampf((speed - HIT_MIN_SPEED) / (HIT_FULL_SPEED - HIT_MIN_SPEED), 0.0, 1.0)
+	return HIT_DAMAGE * t * t
 
 
-## Where the centre of the ball sits. A function so the renderer and the
-## collision cannot disagree about it.
-static func ball_height(bearing: float) -> float:
-	return 3.0 - 0.55 * absf(sin(bearing))
+## The worst case the player can be asked to escape: the far corner of the deck
+## to the ramp, at full speed, with a little left over for turning around.
+##
+## Computed rather than eyeballed. "Can the player actually get out" is the one
+## number that decides whether the collapse is tense or unfair, and it is the
+## kind of relationship that silently stops being true when the deck grows.
+static func escape_margin(level: int) -> float:
+	var corner := Vector2(DECK_W * 0.5, DECK_D * 0.5)
+	var ramp := Vector2(0.0, ramp_z())
+	var run := corner.distance_to(ramp)
+	return escape_seconds_for(level) - run / DRIVE_MAX
+
+
+## How much support the deck starts with, so `integrity` is a fraction.
+## The deck's full support, columns and infill together. Walls are counted so
+## the gauge is a reading of the whole structure - a player who spends a minute
+## on panels should see SOMETHING move, just far less than a column moves it.
+static func total_capacity() -> float:
+	return float(GRID_X * GRID_Z) * COLUMN_CAPACITY + expected_walls() * WALL_CAPACITY
+
+
+## How many infill panels a deck has, on average. Used only to normalise the
+## gauge, so it does not need to be exact - but it does need to exist, or a
+## basement with more panels than usual would start below 100%.
+static func expected_walls() -> float:
+	return float(GRID_Z * (GRID_X - 1)) * 0.42
+
+
+## Turn rate at a given speed. Quick on the spot, lazy at speed.
+static func turn_rate_at(speed: float) -> float:
+	var t := clampf(absf(speed) / DRIVE_MAX, 0.0, 1.0)
+	return TURN_RATE * lerpf(1.0, TURN_AT_SPEED, t)

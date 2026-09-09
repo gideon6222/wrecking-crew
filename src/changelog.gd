@@ -12,9 +12,22 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.3.0"
+const VERSION := "0.4.0"
 
 const RELEASES := [
+	{
+		"version": "0.4.0",
+		"date": "2026-09-08",
+		"title": "Down in the basement",
+		"notes": [
+			"You are inside a parking level now, driving a wrecking machine around a room full of columns.",
+			"Left thumb drives, right thumb swings the boom. The ball is on a chain and nothing aims it - you move it by moving the machine.",
+			"Damage is SPEED. Nudging a column does nothing; whipping the ball round at ten metres a second takes a chunk out.",
+			"Break the columns and the infill walls. The support gauge at the top is how much is still holding the slab up.",
+			"Take out enough and the whole thing lets go - and then you have seconds to reach the ramp before it comes down on you.",
+			"Concrete, dust and a real captured environment lighting the room.",
+		],
+	},
 	{
 		"version": "0.3.0",
 		"date": "2026-09-08",

@@ -2,97 +2,164 @@ extends RefCounted
 
 ## Unit tests on the simulation.
 ##
-## Weighted toward the things that actually go wrong. "The boom moves when you
-## aim it" is not worth a test; frame-rate dependence, a derived value drifting
-## from the thing it is derived from, a mechanic whose condition can never be
-## true, and a state the game cannot get out of are.
+## Weighted toward the things that actually go wrong. "The machine moves when
+## you drive it" is not worth a test; frame-rate dependence, a constraint that
+## injects energy, a spawn inside geometry, and a state the game cannot get out
+## of are - and every one of those has happened here.
 
 const STEP := 1.0 / 60.0
 
 
-## Steps the sim without touching either control. Anything that needs input
-## issues it itself - there is no "aim toward" argument, because there are two
-## controls and a single one would hide which was being tested.
-func _run(s: Sim, seconds: float) -> void:
-	var n := int(round(seconds / STEP))
-	for i in n:
+func _run(s: Sim, seconds: float, throttle := 0.0, steer := 0.0) -> void:
+	for i in int(round(seconds / STEP)):
+		s.drive(throttle, steer)
 		s.advance(STEP)
 
 
-## Drives the ball through one bay's column until it goes, or gives up.
-## Returns how many swings it cost.
-## Driven through `Policies.work_bay`, which is the same code the scripted
-## player uses. An earlier version of this helper had a sweep of its own and
-## was worse at the game than the committed policy - so tests meant to check
-## the building's behaviour were really checking whether that sweep could
-## connect, and eight of them failed for reasons unrelated to their subject.
-func _work(s: Sim, bay: int, seconds: float = 20.0) -> int:
-	var before := s.swings_left
-	var n := int(round(seconds / STEP))
-	for i in n:
-		if s.over or not s.bays[bay].standing:
-			break
-		Policies.work_bay(s, bay)
+# --- the machine ----------------------------------------------------------
+
+func test_an_untouched_machine_stays_put(t: TestHarness) -> void:
+	var s := Sim.new()
+	var start := s.pos
+	_run(s, 5.0)
+	t.approx(s.pos.distance_to(start), 0.0, 0.001, "the machine wandered off on its own")
+	t.approx(s.speed, 0.0, 0.001, "the machine is moving with no throttle")
+	t.eq(s.columns_down, 0, "columns fell with nobody touching anything")
+
+
+func test_the_spawn_is_clear_of_everything(t: TestHarness) -> void:
+	# This one is not hypothetical. The spawn was on the centre line for one
+	# build and half a bay across for the next, and BOTH put the ball inside a
+	# column on frame one - the first because the grid was odd, the second
+	# because the grid became even and the columns moved. The ball then sat in
+	# permanent contact and logged five hundred hits in a run nobody played.
+	for level in [1, 2, 3, 4, 5, 8]:
+		var s := Sim.new(level)
+		for c in s.columns:
+			t.gt(s.pos.distance_to(c.at), Tuning.RIG_RADIUS + Tuning.COLUMN_RADIUS,
+				"level %d spawns the machine inside a column" % level)
+			t.gt(s.ball.distance_to(c.at), Tuning.BALL_RADIUS + Tuning.COLUMN_RADIUS,
+				"level %d spawns the BALL inside a column" % level)
+		for w in s.walls:
+			t.gt(Sim._distance_to_segment(s.ball, w.a, w.b), Tuning.BALL_RADIUS + Tuning.WALL_THICK,
+				"level %d spawns the ball inside a wall panel" % level)
+
+
+func test_the_throttle_sets_a_speed_not_an_acceleration(t: TestHarness) -> void:
+	# It accumulated acceleration for one build, so a fifth of throttle still
+	# reached top speed - just later. A control that only changes how long
+	# something takes is not a control the player can use, and the policy
+	# written to prove that speed does the damage was not actually slow.
+	# Measured as a PEAK over the run rather than at the end. Both machines
+	# drive the length of the room and stop against the far wall, so reading
+	# the final speed measures the wall rather than the throttle - which the
+	# first version of this test did, and reported that full throttle could not
+	# reach full speed.
+	t.lt(_top_speed(0.25), _top_speed(1.0) * 0.45, "a quarter throttle reaches nearly full speed")
+	t.approx(_top_speed(1.0), Tuning.DRIVE_MAX, 0.3, "full throttle does not reach full speed")
+
+
+func _top_speed(throttle: float) -> float:
+	var s := Sim.new()
+	var peak := 0.0
+	for i in int(round(6.0 / STEP)):
+		s.drive(throttle, 0.0)
 		s.advance(STEP)
-	return before - s.swings_left
+		peak = maxf(peak, s.speed)
+	return peak
 
 
-# --- the crane ------------------------------------------------------------
+func test_the_machine_coasts_to_a_stop(t: TestHarness) -> void:
+	var s := Sim.new()
+	_run(s, 3.0, 1.0)
+	t.gt(s.speed, 1.0, "the machine never got moving")
+	_run(s, 4.0, 0.0)
+	t.approx(s.speed, 0.0, 0.15, "the machine never coasts to a stop")
 
-func test_an_untouched_crane_does_nothing(t: TestHarness) -> void:
+
+func test_turning_is_slower_at_speed(t: TestHarness) -> void:
+	t.gt(Tuning.turn_rate_at(0.0), Tuning.turn_rate_at(Tuning.DRIVE_MAX),
+		"the machine turns as sharply at full speed as it does standing still")
+
+
+func test_the_machine_cannot_leave_the_room(t: TestHarness) -> void:
+	# A machine that can drive off the edge is a machine that can be lost, and
+	# the collapse then has nothing to catch it.
+	for dir in [0.0, PI * 0.5, PI, -PI * 0.5]:
+		var s := Sim.new()
+		s.heading = dir
+		_run(s, 14.0, 1.0)
+		t.lt(absf(s.pos.x), Tuning.DECK_W * 0.5 + 0.01, "the machine left the room sideways")
+		t.lt(s.pos.y, Tuning.DECK_D * 0.5 + 0.01, "the machine left the room forwards")
+		t.gt(s.pos.y, -Tuning.DECK_D * 0.5 - Tuning.RAMP_DEPTH - 0.01,
+			"the machine left the room through the back")
+
+
+# --- the chain ------------------------------------------------------------
+
+func test_the_ball_hangs_still_when_the_machine_does(t: TestHarness) -> void:
 	var s := Sim.new()
 	_run(s, 6.0)
-	t.approx(s.yaw, 0.0, 0.0001, "the boom slewed with no input at all")
-	t.approx(s.bearing, 0.0, 0.0001, "the ball moved with no input at all")
-	t.eq(s.swings_left, Tuning.swings_for(1), "a swing was spent without the player doing anything")
-	t.eq(s.bays_standing(), Tuning.bays_for(1), "the building fell down on its own")
+	t.approx(s.ball_speed(), 0.0, 0.05, "the ball moves with the machine parked")
+	t.approx(s.ball.distance_to(s.boom_tip()), 0.0, 0.05, "the ball is not hanging under the boom")
 
 
-func test_the_ball_trails_the_boom_and_swings_past_it(t: TestHarness) -> void:
-	# The single most important behaviour in the game. Slew the boom and the
-	# ball must lag BEHIND it on the way out, then overshoot - that overshoot
-	# is the whole reason a player leads a target instead of pointing at one.
-	# If it ever became critically damped the crane would be a cursor.
+func test_the_chain_never_stretches(t: TestHarness) -> void:
 	var s := Sim.new()
-	s.aim_to(Tuning.YAW_MAX)
-	var lagged := false
-	var overshot := false
-	for i in int(round(3.0 / STEP)):
+	for i in int(round(20.0 / STEP)):
+		# Drive hard and turn hard, which is the worst case for the constraint.
+		s.drive(1.0, sin(s.time * 1.7))
+		s.aim_to(sin(s.time * 0.9) * Tuning.TURRET_MAX)
 		s.advance(STEP)
-		if s.yaw > 0.15 and s.bearing < s.yaw - 0.05:
-			lagged = true
-		if s.bearing > s.yaw + 0.02:
-			overshot = true
-	t.ok(lagged, "the ball kept up with the boom - there is no lag to lead")
-	t.ok(overshot, "the ball never swung past the boom - the spring is overdamped")
+		t.lt(s.ball.distance_to(s.boom_tip()), Tuning.CHAIN + 0.05,
+			"the chain stretched past its length")
 
 
-func test_a_parked_crane_cannot_reach_the_building(t: TestHarness) -> void:
-	# The margin the design rests on: pointing is not hitting. Let the crane
-	# settle fully at full lock, so the ball is at rest and the radius has
-	# decayed to BOOM - it must still be short of the face.
+func test_the_chain_does_not_invent_energy(t: TestHarness) -> void:
+	# THE test for this game's physics, and it exists because the constraint
+	# did exactly that. Solving a distance constraint by moving the ball and
+	# leaving its velocity alone injects energy on every taut frame, and it
+	# compounds: measured peak ball speed was 216 m/s on a machine that cannot
+	# exceed 9.5. The symptom was not an error - it was a policy that crawled
+	# at a fifth throttle outscoring one that drove flat out.
+	#
+	# The ball is now given the velocity it actually travelled at, so it cannot
+	# be moving faster than it moved. The bound is generous, because a genuine
+	# whip is fast; what it catches is the runaway.
 	var s := Sim.new()
-	s.aim_to(Tuning.YAW_MAX)
-	_run(s, 9.0)
-	t.approx(s.bearing_vel, 0.0, 0.02, "the ball never settled")
-	t.lt(s.radius, Tuning.FACE_Z - Tuning.BALL_RADIUS,
-		"a settled crane already reaches the building - aiming is all there is to do")
-	t.eq(s.swings_left, Tuning.swings_for(1), "a settled ball spent a swing")
+	var ceiling := (Tuning.BOOM_LEN + Tuning.CHAIN) * (Tuning.TURN_RATE + Tuning.TURRET_SLEW) + Tuning.DRIVE_MAX
+	for i in int(round(30.0 / STEP)):
+		s.drive(1.0, sin(s.time * 2.3))
+		s.aim_to(sin(s.time * 1.1) * Tuning.TURRET_MAX)
+		s.advance(STEP)
+		t.lt(s.ball_speed(), ceiling,
+			"the ball is moving faster than the machine could possibly have swung it")
 
 
-func test_swinging_hard_reaches_past_the_face(t: TestHarness) -> void:
-	var s := Sim.new()
-	var deepest := 0.0
+func test_driving_is_what_moves_the_ball(t: TestHarness) -> void:
+	var parked := Sim.new()
+	_run(parked, 4.0)
+	var driven := Sim.new()
+	var peak := 0.0
 	for i in int(round(4.0 / STEP)):
-		var half := Tuning.swing_period() * 0.5
-		s.aim_to(Tuning.YAW_MAX * 0.6 if fmod(s.time, half * 2.0) < half else -Tuning.YAW_MAX * 0.6)
+		driven.drive(1.0, 0.6)
+		driven.advance(STEP)
+		peak = maxf(peak, driven.ball_speed())
+	t.approx(parked.ball_speed(), 0.0, 0.05, "the parked machine's ball is moving")
+	t.gt(peak, Tuning.HIT_MIN_SPEED,
+		"driving and turning cannot get the ball above the speed that does damage")
+
+
+func test_the_ball_rides_higher_the_further_it_swings(t: TestHarness) -> void:
+	# The chain is a fixed length, so a ball out at full stretch has to be level
+	# with the boom tip. One function, so the collision and the drawing agree.
+	var s := Sim.new()
+	var low := s.ball_y()
+	for i in int(round(6.0 / STEP)):
+		s.drive(1.0, 1.0)
 		s.advance(STEP)
-		deepest = maxf(deepest, s.ball_z())
-	# The ball only has to get within its own radius of the face to touch a
-	# column, which is the same threshold the strike uses. Asserting against
-	# the face itself would be asserting something the game never requires.
-	t.gt(deepest, Tuning.FACE_Z - Tuning.BALL_RADIUS,
-		"swinging the crane never gets the ball to the building")
+	t.gt(s.ball.distance_to(s.boom_tip()), 1.0, "the ball never swung out")
+	t.gt(s.ball_y(), low, "the ball does not rise as it swings out")
 
 
 func test_the_crane_is_frame_rate_independent(t: TestHarness) -> void:
@@ -101,248 +168,209 @@ func test_the_crane_is_frame_rate_independent(t: TestHarness) -> void:
 	# actually runs at.
 	var a := Sim.new()
 	var b := Sim.new()
-	for i in 240:
-		a.aim_to(Tuning.YAW_MAX)
+	for i in 480:
+		a.drive(1.0, 0.5)
 		a.advance(1.0 / 120.0)
-	for i in 120:
-		b.aim_to(Tuning.YAW_MAX)
+	for i in 240:
+		b.drive(1.0, 0.5)
 		b.advance(1.0 / 60.0)
-	t.approx(a.yaw, b.yaw, 0.03, "the boom ends up somewhere different at 120fps")
-	t.approx(a.bearing, b.bearing, 0.05, "the ball ends up somewhere different at 120fps")
+	t.approx(a.pos.x, b.pos.x, 0.6, "the machine is somewhere else at 120fps")
+	t.approx(a.pos.y, b.pos.y, 0.6, "the machine is somewhere else at 120fps")
 
 
-func test_the_ball_position_is_derived_and_never_stored(t: TestHarness) -> void:
-	# The score and the picture must come from one source. On a sibling game a
-	# score that disagreed with the drawn object was the one bug that could not
-	# be forgiven; the only fix that makes it impossible is this.
+# --- breaking things ------------------------------------------------------
+
+func test_a_slow_ball_does_no_damage(t: TestHarness) -> void:
+	# Otherwise nudging things over is as good as swinging at them, and the
+	# whole reason the machine drives freely disappears.
 	var s := Sim.new()
-	s.aim_to(0.7)
-	_run(s, 1.2)
-	t.approx(s.ball_x(), s.x + s.radius * sin(s.bearing), 0.0001,
-		"ball_x() is not the crane plus the boom")
-	t.approx(s.ball_z(), s.radius * cos(s.bearing), 0.0001,
-		"ball_z() is not the crane plus the boom")
-	t.gt(s.ball_y(), 0.0, "the ball is underground")
+	var target: int = _nearest(s)
+	var hp: float = s.columns[target].hp
+	# Creep at the column and hold there.
+	for i in int(round(30.0 / STEP)):
+		var to_it: Vector2 = s.columns[target].at - s.pos
+		var err := wrapf(atan2(to_it.x, to_it.y) - s.heading, -PI, PI)
+		s.drive(0.12, clampf(err * 2.0, -1.0, 1.0))
+		s.advance(STEP)
+	t.eq(s.columns[target].standing, true, "a column fell to a machine creeping at it")
+	t.approx(s.columns[target].hp, hp, 0.01, "a crawling ball took hit points off a column")
 
 
-func test_aiming_is_clamped_at_the_seam(t: TestHarness) -> void:
+func test_the_gauge_only_falls_when_something_falls(t: TestHarness) -> void:
 	var s := Sim.new()
-	s.aim_to(50.0)
-	t.approx(s.yaw_target, Tuning.YAW_MAX, 0.0001, "aim_to accepted a bearing off the stop")
-	s.aim_to(-50.0)
-	t.approx(s.yaw_target, -Tuning.YAW_MAX, 0.0001, "aim_to accepted a bearing off the stop")
-
-
-func test_the_crane_parks_where_it_is_sent(t: TestHarness) -> void:
-	var s := Sim.new()
-	t.eq(s.lane, Tuning.START_LANE, "the demo did not start in the starting spot")
-	s.nudge(1)
-	_run(s, 3.0)
-	t.approx(s.x, Tuning.LANES[Tuning.START_LANE + 1], 0.05, "the crane never reached its spot")
-	for i in 8:
-		s.nudge(1)
-	t.eq(s.lane, Tuning.LANES.size() - 1, "the crane drove off the end of the site")
-	for i in 16:
-		s.nudge(-1)
-	t.eq(s.lane, 0, "the crane drove off the other end of the site")
-
-
-func test_steer_to_snaps_to_a_real_spot(t: TestHarness) -> void:
-	var s := Sim.new()
-	s.steer_to(99.0)
-	t.eq(s.lane, Tuning.LANES.size() - 1, "steer_to did not clamp to the outermost spot")
-	s.steer_to(0.1)
-	t.approx(s.target_x, Tuning.LANES[s.lane], 0.0001, "the crane is heading between two spots")
-
-
-# --- the building ---------------------------------------------------------
-
-func test_the_site_is_built_from_the_level(t: TestHarness) -> void:
-	for level in [1, 3, 6, 12]:
-		var s := Sim.new(level)
-		t.eq(s.bays.size(), Tuning.bays_for(level), "level %d has the wrong number of bays" % level)
-		t.eq(s.swings_left, Tuning.swings_for(level), "level %d has the wrong swing budget" % level)
-		for i in s.bays.size():
-			t.eq(s.bays[i].hp, Tuning.column_hp_at(level, i),
-				"level %d bay %d does not match its keyed column" % [level, i])
-			t.ok(s.bays[i].standing, "a bay started already down")
-
-
-func test_the_same_building_is_the_same_every_time(t: TestHarness) -> void:
-	# Keyed on the place, never on a stream, so a given site is the same site
-	# on any device and a golden over a whole demolition is possible at all.
-	for level in [1, 4, 9]:
-		var a := Sim.new(level)
-		var b := Sim.new(level)
-		for i in a.bays.size():
-			t.eq(a.bays[i].hp, b.bays[i].hp,
-				"level %d bay %d differed between two builds" % [level, i])
-
-
-func test_a_column_takes_its_hit_points_to_break(t: TestHarness) -> void:
-	var s := Sim.new()
-	var hp: int = s.bays[1].hp
-	var spent := _work(s, 1)
-	t.eq(s.bays[1].standing, false, "the middle bay never came down")
-	t.eq(spent, hp, "the column cost a different number of swings than it had hit points")
-
-
-func test_dropping_a_bay_pays_its_floors(t: TestHarness) -> void:
-	var s := Sim.new()
-	var floors: int = s.bays[1].floors
-	_work(s, 1)
-	t.eq(s.floors_down, floors, "the floors that came down were not counted")
-	t.eq(s.rubble, floors * Tuning.RUBBLE_PER_FLOOR, "the rubble does not match the floors")
-
-
-func test_a_fallen_bay_cannot_be_hit_again(t: TestHarness) -> void:
-	# Otherwise the swing budget drains into thin air and the player is being
-	# charged for hitting nothing.
-	var s := Sim.new()
-	_work(s, 1)
-	var after := s.swings_left
-	_work(s, 1, 3.0)
-	t.eq(s.swings_left, after, "swings were spent on a bay that had already fallen")
-
-
-# --- the lean, which is the thing that goes wrong -------------------------
-
-func test_the_middle_bay_costs_almost_no_lean(t: TestHarness) -> void:
-	var s := Sim.new()
-	_work(s, 1)
-	_run(s, 2.0)
-	t.lt(absf(s.lean), Tuning.LEAN_WARN,
-		"taking the middle bay out unbalances the building, so there is no safe opening move")
-
-
-func test_an_outer_bay_costs_real_lean(t: TestHarness) -> void:
-	var s := Sim.new()
-	_work(s, 0)
-	_run(s, 2.0)
-	t.gt(absf(s.lean), Tuning.LEAN_WARN,
-		"taking an outer bay out first is free, so the order does not matter")
-
-
-func test_working_along_one_side_topples_a_wide_building(t: TestHarness) -> void:
-	# The claim the game rests on, driven through the real simulation rather
-	# than through the arithmetic in test_tuning.
-	var s := Sim.new(5)
-	for bay in s.bays.size():
+	t.approx(s.integrity, 1.0, 0.001, "the deck does not start fully supported")
+	var mem := {}
+	var last := s.integrity
+	for i in int(round(60.0 / STEP)):
 		if s.over:
 			break
-		_work(s, bay)
-		_run(s, 1.5)
-	t.eq(s.over, true, "a one-sided demolition of a wide building did not end")
-	t.eq(s.won, false, "a one-sided demolition of a wide building was recorded as a success")
-	t.gt(float(s.bays_standing()), 0.0,
-		"the building came all the way down and still counted as a failure")
+		Policies.steer(Policies.WRECKER, s, mem)
+		var before_down := s.columns_down + s.walls_down
+		s.advance(STEP)
+		if s.integrity < last:
+			t.gt(float(s.columns_down + s.walls_down), float(before_down) - 0.5,
+				"the gauge moved without anything coming down")
+		last = s.integrity
 
 
-func test_a_lone_bay_never_topples(t: TestHarness) -> void:
-	# The clause that makes the game finishable at all. The lean is the
-	# centroid of what is still standing, so the last bay is by definition at
-	# its own offset and reads as a maximum - without this, no building could
-	# ever be completed, in any order.
+func test_a_fallen_column_stays_fallen_and_stops_paying(t: TestHarness) -> void:
 	var s := Sim.new()
-	_work(s, 1)
-	_work(s, 0)
-	_run(s, 3.0)
-	t.eq(s.bays_standing(), 1, "the test did not reach a single standing bay")
-	t.eq(s.over, false, "a lone standing bay toppled the building")
-
-
-func test_the_worst_lean_ignores_what_cannot_topple(t: TestHarness) -> void:
-	# Measured: recording the lean while a lone bay stood put every demolition
-	# at 1.00 and made the clean-drop bonus unearnable by anybody.
-	var s := Sim.new()
-	_work(s, 1)
-	_work(s, 0)
-	_run(s, 3.0)
-	t.lt(s.worst_lean, Tuning.TOPPLE_LIMIT,
-		"the worst lean recorded a value that could never have toppled the building")
-
-
-# --- finishing ------------------------------------------------------------
-
-func test_bringing_it_all_down_wins(t: TestHarness) -> void:
-	var s := Sim.new()
-	for bay in [1, 0, 2]:
-		_work(s, bay)
-		_run(s, 1.0)
-	t.eq(s.bays_standing(), 0, "the building did not come all the way down")
-	t.eq(s.over, true, "the demolition never finished")
-	t.eq(s.won, true, "bringing the whole building down was not a win")
-
-
-func test_a_clean_drop_pays_the_bonus(t: TestHarness) -> void:
-	var s := Sim.new()
-	var floors := s.floors_total()
-	for bay in [1, 0, 2]:
-		_work(s, bay)
-		_run(s, 1.0)
-	t.lt(s.worst_lean, Tuning.LEAN_WARN, "the balanced order was not clean")
-	t.gt(float(s.rubble),
-		float(floors * Tuning.RUBBLE_PER_FLOOR + Tuning.CLEAN_DROP_BONUS) - 1.0,
-		"a clean drop did not pay the bonus")
-
-
-func test_running_out_of_swings_ends_the_demolition(t: TestHarness) -> void:
-	var s := Sim.new()
-	var guard := 0
-	while not s.over and guard < 40:
-		guard += 1
-		var worked := false
-		for bay in s.bays.size():
-			if s.bays[bay].standing:
-				_work(s, bay, 6.0)
-				worked = true
-				break
-		if not worked:
+	var mem := {}
+	for i in int(round(60.0 / STEP)):
+		if s.over or s.columns_down > 0:
 			break
-	t.eq(s.over, true, "the demolition never ended one way or the other")
+		Policies.steer(Policies.WRECKER, s, mem)
+		s.advance(STEP)
+	t.gt(float(s.columns_down), 0.0, "the aiming policy never brought a column down in a minute")
+	var banked := s.rubble
+	var down := 0
+	for c in s.columns:
+		if not c.standing:
+			down += 1
+			t.lt(c.hp, 0.01, "a column is down but still has hit points")
+	t.eq(down, s.columns_down, "the count of fallen columns disagrees with the columns")
+	t.gt(float(banked), 0.0, "bringing a column down paid nothing")
 
 
-func test_advancing_a_finished_demolition_changes_nothing(t: TestHarness) -> void:
+# --- coming down and getting out ------------------------------------------
+
+func test_the_collapse_starts_when_the_support_goes(t: TestHarness) -> void:
 	var s := Sim.new()
-	for bay in [1, 0, 2]:
-		_work(s, bay)
-		_run(s, 1.0)
+	t.eq(s.collapsing, false, "the deck starts already collapsing")
+	# Knock the columns out directly rather than driving at them - this is a
+	# test of the threshold, not of anybody's driving.
+	for c in s.columns:
+		if s.collapsing:
+			break
+		c.standing = false
+		s.columns_down += 1
+		s._recompute_integrity()
+	t.eq(s.collapsing, true, "the deck never let go however many columns went")
+	t.gt(s.escape_left, 0.0, "the collapse started with no time to get out")
+	t.lt(s.integrity, Tuning.COLLAPSE_AT + 0.001, "the collapse started above its own threshold")
+
+
+func test_reaching_the_ramp_wins_and_pays_for_the_time_left(t: TestHarness) -> void:
+	var s := Sim.new()
+	for c in s.columns:
+		if s.collapsing:
+			break
+		c.standing = false
+		s.columns_down += 1
+		s._recompute_integrity()
+	var banked := s.rubble
+	var left := s.escape_left
+	s.pos = Vector2(0.0, Tuning.ramp_z() - 1.0)
+	s.advance(STEP)
+	t.eq(s.over, true, "reaching the ramp did not end the demolition")
+	t.eq(s.won, true, "reaching the ramp was not a win")
+	t.gt(float(s.rubble), float(banked), "getting out early paid nothing")
+	t.lt(s.rubble - banked, int(left * float(Tuning.ESCAPE_BONUS_PER_SECOND)) + 2,
+		"the escape paid more than the time left is worth")
+
+
+func test_running_out_of_time_is_a_loss(t: TestHarness) -> void:
+	var s := Sim.new()
+	for c in s.columns:
+		if s.collapsing:
+			break
+		c.standing = false
+		s.columns_down += 1
+		s._recompute_integrity()
+	# Park in the middle of the room and wait.
+	s.pos = Vector2.ZERO
+	_run(s, Tuning.escape_seconds_for(1) + 1.0)
+	t.eq(s.over, true, "the collapse never finished")
+	t.eq(s.won, false, "sitting under a collapsing slab was recorded as a win")
+
+
+func test_the_ramp_only_counts_once_it_is_coming_down(t: TestHarness) -> void:
+	# Otherwise the player can park in the exit and the level ends itself.
+	var s := Sim.new()
+	s.pos = Vector2(0.0, Tuning.ramp_z() - 1.0)
+	_run(s, 3.0)
+	t.eq(s.over, false, "parking in the exit ended the level before anything was broken")
+
+
+func test_advancing_a_finished_run_changes_nothing(t: TestHarness) -> void:
+	var s := Sim.new()
+	for c in s.columns:
+		if s.collapsing:
+			break
+		c.standing = false
+		s.columns_down += 1
+		s._recompute_integrity()
+	s.pos = Vector2(0.0, Tuning.ramp_z() - 1.0)
+	s.advance(STEP)
 	var before := s.state()
-	_run(s, 5.0)
+	_run(s, 4.0, 1.0)
 	t.dict_eq(s.state(), before, "a demolition that is over kept simulating")
 
 
-func test_the_next_site_is_a_fresh_building(t: TestHarness) -> void:
-	# The bug this pins, in its new clothes: the first street build set `over`
-	# at the end and had nothing to clear it, so the game froze with a live HUD.
-	# Every test in that suite read the state at the end of a level, which is
-	# the exact instant the freeze began.
+func test_the_next_site_is_a_fresh_basement(t: TestHarness) -> void:
+	# The bug this pins: an earlier build set `over` at the end of a level and
+	# had nothing to clear it, so the game froze with a live HUD. Every test in
+	# that suite read the state at the end of a level, which is the exact
+	# instant the freeze began.
 	var s := Sim.new()
-	for bay in [1, 0, 2]:
-		_work(s, bay)
-		_run(s, 1.0)
-	t.eq(s.over, true, "the first site never finished")
+	for c in s.columns:
+		if s.collapsing:
+			break
+		c.standing = false
+		s.columns_down += 1
+		s._recompute_integrity()
+	s.pos = Vector2(0.0, Tuning.ramp_z() - 1.0)
+	s.advance(STEP)
+	t.eq(s.over, true, "the first basement never finished")
 	var banked := s.rubble
 
 	s.next_site()
-	t.eq(s.over, false, "the demolition is still over after moving to the next site")
+	t.eq(s.over, false, "still over after moving to the next basement")
 	t.eq(s.level, 2, "the site number did not advance")
 	t.eq(s.rubble, banked, "the haul was lost between sites")
-	t.eq(s.bays_standing(), Tuning.bays_for(2), "the next site did not arrive standing up")
-	t.eq(s.swings_left, Tuning.swings_for(2), "the next site did not get a fresh swing budget")
-	t.approx(s.bearing, 0.0, 0.0001, "the ball carried its swing into the next site")
-	t.approx(s.worst_lean, 0.0, 0.0001, "the next site inherited the last one's lean")
-
-	# And it must actually play.
-	_work(s, 1)
-	t.gt(float(s.floors_down), 0.0, "the next site cannot be worked")
+	t.eq(s.collapsing, false, "the next basement arrived already collapsing")
+	t.approx(s.integrity, 1.0, 0.001, "the next basement arrived already damaged")
+	t.eq(s.columns_standing(), Tuning.GRID_X * Tuning.GRID_Z, "the next basement is missing columns")
+	t.approx(s.ball_speed(), 0.0, 0.05, "the ball carried its swing into the next basement")
 
 
 func test_a_fresh_run_starts_from_the_first_site(t: TestHarness) -> void:
-	var s := Sim.new(4)
-	_work(s, 0)
+	var s := Sim.new(5)
+	s.rubble = 900
 	s.restart(1)
-	t.eq(s.level, 1, "a fresh run did not go back to the first site")
+	t.eq(s.level, 1, "a fresh run did not go back to the first basement")
 	t.eq(s.rubble, 0, "a fresh run kept the last run's haul")
-	t.eq(s.over, false, "restarting left the demolition over")
-	t.eq(s.bays_standing(), Tuning.bays_for(1), "a fresh run did not get a whole building")
+	t.eq(s.over, false, "restarting left the run over")
+
+
+func test_the_same_basement_is_the_same_every_time(t: TestHarness) -> void:
+	# Keyed on the place, never on a stream, so a given basement is the same on
+	# any device and a golden over a whole demolition is possible at all.
+	for level in [1, 3, 7]:
+		var a := Sim.new(level)
+		var b := Sim.new(level)
+		t.eq(a.walls.size(), b.walls.size(), "level %d built a different number of panels" % level)
+		for i in a.walls.size():
+			t.approx(a.walls[i].at.x, b.walls[i].at.x, 0.0001, "level %d panel %d moved" % [level, i])
+
+
+func test_no_panel_blocks_the_way_out(t: TestHarness) -> void:
+	# A wall across the ramp mouth would make a level unfinishable in a way the
+	# player could not see coming, which is the worst kind of unfair.
+	for level in range(1, 20):
+		var s := Sim.new(level)
+		for w in s.walls:
+			var blocks: bool = (Sim._distance_to_segment(Vector2(0.0, Tuning.ramp_z()), w.a, w.b)
+				< Tuning.RAMP_W * 0.5)
+			t.ok(not blocks, "level %d has a panel across the ramp mouth" % level)
+
+
+func _nearest(s: Sim) -> int:
+	var best := 0
+	var best_d := INF
+	for i in s.columns.size():
+		var d: float = s.pos.distance_to(s.columns[i].at)
+		if d < best_d:
+			best_d = d
+			best = i
+	return best

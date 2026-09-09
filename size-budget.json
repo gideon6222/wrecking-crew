@@ -1,5 +1,5 @@
 {
-  "apk_bytes": 28429782,
+  "apk_bytes": 31154417,
   "note": "Regenerate with `--update` and commit. Both directions are checked; a shrink means something stopped being included.",
   "tolerance_percent": 10.0
 }

@@ -2,26 +2,14 @@ extends SceneTree
 
 ## Smoke test: boots the real scene and plays it.
 ##
-##   godot --headless --script res://test/run_smoke.gd
-##
 ## The pure tests cannot see a wiring bug - a scene that fails to build, a node
-## that is never added, a render path that stopped being flushed, a HUD reading
-## a field that no longer exists. Those only show up when something actually
-## instantiates the game.
+## never added, a render path that stopped being flushed, a HUD reading a field
+## that no longer exists. Those only show up when something instantiates the
+## game.
 ##
-## Three assertions here carry most of the weight, and all three are for bugs
-## that have actually shipped on this project:
-##
-## 1. **What exists is drawn.** A subsystem that renders nothing and one that
-##    does not exist look identical from outside. That cost a full tuning pass
-##    on a sibling game - the enemies were invisible while still killing.
-## 2. **World +X is on the right of the screen.** A chase camera turned around
-##    mirrors X, and a sibling game shipped inverted steering for its whole
-##    life because every test drove the seam in world coordinates.
-## 3. **The level can be left.** Reaching the end set `over`, `advance()`
-##    returned early from then on, and the game froze with a live HUD. Every
-##    other test read the state at the end of a level, which is the exact
-##    instant that freeze began.
+## Three of these are for bugs that actually shipped on this project: what
+## exists must be drawn; the controls must resolve from the viewport edge
+## rather than a literal screen size; and a finished level must start the next.
 
 var _t := TestHarness.new()
 
@@ -36,176 +24,143 @@ func _initialize() -> void:
 
 	var main = scene.instantiate()
 	root.add_child(main)
-
-	# Freeze first, then step. Real frames run between a scene loading and a
-	# harness taking over, and `_ready` has not fired yet either, because
-	# add_child() during SceneTree._initialize() defers it to the first
-	# processed frame. freeze() boots the scene explicitly.
 	main.freeze()
 
-	_t.begin("smoke > the scene builds its world")
+	_t.begin("smoke > the scene builds the room")
 	_t.ok(main.sim != null, "Sim was never created")
-	_t.ok(main.get_node_or_null("Ground") != null, "the site is missing from the scene")
-	_t.ok(main.get_node_or_null("Rig") != null, "the crane is missing from the scene")
-	_t.ok(main.get_node_or_null("Ball") != null, "the wrecking ball is missing from the scene")
-	_t.ok(main.get_node_or_null("Floors") != null, "the building is missing from the scene")
-	_t.ok(main.get_node_or_null("Columns") != null, "the columns are missing from the scene")
-	_t.ok(main.get_node_or_null("Hud") != null, "the HUD layer is missing")
-	_t.ok(main.get_node_or_null("Neighbour-1") != null,
-		"the neighbouring block is missing - the thing the whole game is about not hitting")
+	for n in ["Deck", "Roof", "Rig", "Ball", "Columns", "Walls", "Dust", "Hud"]:
+		_t.ok(main.get_node_or_null(n) != null, "%s is missing from the scene" % n)
 
-	_check_the_building_is_drawn(main)
+	_check_the_room_is_drawn(main)
 	_check_the_controls_are_anchored(main)
-	_check_screen_right(main)
+	_check_the_camera_is_behind_the_machine(main)
 
-	# Play it properly rather than passively, or the drawing paths that only
-	# fire on an impact are never reached and this proves the game boots rather
-	# than that it works.
-	main.freeze()
+	# Played rather than watched, or the drawing paths that only fire on an
+	# impact are never reached and this proves the game boots rather than that
+	# it works.
+	main.freeze(2)
 	var peak_debris := 0
 	var mem := {}
 	var guard := 0
-	while not main.sim.over and guard < 6000:
-		Policies.steer(Policies.DEMOLISHER, main.sim, mem)
+	while not main.sim.over and guard < 7000:
+		Policies.steer(Policies.WRECKER, main.sim, mem)
 		main.advance(1.0 / 60.0, 1.0 / 60.0)
 		peak_debris = maxi(peak_debris, main._debris.multimesh.visible_instance_count)
 		guard += 1
 
 	_t.begin("smoke > a whole demolition happened")
 	_t.eq(main.sim.over, true, "the demolition never finished")
-	_t.eq(main.sim.won, true, "the balanced policy failed the first building")
-	_t.gt(float(main.sim.floors_down), 0.0, "nothing came down")
+	_t.gt(float(main.sim.columns_down), 0.0, "no columns came down")
 	_t.gt(float(main.sim.rubble), 0.0, "nothing was earned")
+	_t.eq(main.sim.collapsing, true, "the slab never let go")
 
 	_t.begin("smoke > impacts produced debris")
-	_t.gt(float(peak_debris), 0.0, "a building came down and nothing was thrown into the air")
-	_t.lt(float(peak_debris), float(main.DEBRIS_POOL) + 0.5, "more debris was drawn than the pool holds")
-
-	_t.begin("smoke > nothing is drawn once the building is gone")
-	_t.eq(main._floors.multimesh.visible_instance_count, 0,
-		"floors are still being drawn after every bay came down")
-	_t.eq(main._columns.multimesh.visible_instance_count, 0,
-		"columns are still being drawn after every bay came down")
+	_t.gt(float(peak_debris), 0.0, "columns came down and nothing was thrown into the air")
+	_t.lt(float(peak_debris), float(main.DEBRIS_POOL) + 0.5,
+		"more debris was drawn than the pool holds")
 
 	_t.begin("smoke > the HUD reflects the demolition")
-	_t.ok(main._hud.text.contains("SITE"), "the HUD is not being written")
-	_t.ok(main._hud.text.contains(str(main.sim.swings_left)),
-		"the HUD swing count disagrees with the demolition")
+	_t.ok(main._hud.text.contains("LEVEL"), "the HUD is not being written")
 	_t.ok(main._readout.text == SimUtil.fmt(main.sim.rubble),
 		"the rubble readout disagrees with the demolition")
+	_t.lt(main._gauge_fill.size.x, 574.0, "the support gauge is still full after a demolition")
 
-	_check_the_site_can_be_left(main)
-
+	_check_the_level_can_be_left(main)
 	_finish()
 
 
-## What the model says is standing must be what is drawn, cell for cell.
-func _check_the_building_is_drawn(main) -> void:
-	_t.begin("smoke > the building on screen is the building in the model")
+## What the model says is standing must be what is drawn, one for one.
+func _check_the_room_is_drawn(main) -> void:
+	_t.begin("smoke > the room on screen is the room in the model")
 	main.freeze()
-	var expected := 0
-	for b in main.sim.bays:
-		expected += int(b.floors)
-	_t.eq(main._floors.multimesh.visible_instance_count, mini(expected, main.FLOOR_POOL),
-		"the floors drawn do not match the floors standing")
-	_t.eq(main._columns.multimesh.visible_instance_count, main.sim.bays_standing(),
-		"the columns drawn do not match the bays standing")
+	_t.eq(main._columns.multimesh.visible_instance_count, main.sim.columns.size(),
+		"the columns drawn do not match the columns standing")
+	_t.eq(main._walls.multimesh.visible_instance_count, main.sim.walls.size(),
+		"the panels drawn do not match the panels standing")
 
-	# And after one bay goes, exactly that bay's worth must stop being drawn.
-	var floors: int = main.sim.bays[1].floors
-	var before: int = main._floors.multimesh.visible_instance_count
-	var guard := 0
-	while main.sim.bays[1].standing and guard < 3000:
-		Policies.work_bay(main.sim, 1)
-		main.advance(1.0 / 60.0, 1.0 / 60.0)
-		guard += 1
-	_t.eq(main._floors.multimesh.visible_instance_count, before - floors,
-		"a bay came down and the floors drawn did not change by exactly its height")
+	var before: int = main._columns.multimesh.visible_instance_count
+	main.sim.columns[0].standing = false
+	main.advance(1.0 / 60.0, 1.0 / 60.0)
+	_t.eq(main._columns.multimesh.visible_instance_count, before - 1,
+		"a column came down and the same number are still being drawn")
+	main.freeze()
 
 
-## The controls must be ANCHORED to the viewport, never placed at a literal
-## coordinate.
-##
-## A structural assertion, because the bug it guards against is invisible at
-## the size the tests run: the project stretches with `aspect = "expand"`, so
-## on a 19.5:9 phone the canvas is about 1080x2340 while the base is 1080x1920.
-## Two thumb pads laid out against the literal 1920 drew hundreds of pixels
-## high, and the report was "the icons are about half an inch too high". A
-## headless run uses the base size, where the wrong layout and the right one
-## are identical - so no screenshot or coordinate check taken here could ever
-## have caught it. What CAN be checked is the property that makes it impossible.
+## Structural, because the bug it guards against is invisible at the size the
+## tests run: the project stretches with `aspect = "expand"`, so on a 19.5:9
+## phone the canvas is about 1080x2340 while the base is 1080x1920. Controls
+## laid out against the literal 1920 drew hundreds of pixels high, and the
+## report was "the icons are about half an inch too high". A headless run uses
+## the base size, where the wrong layout and the right one are identical - so
+## no screenshot taken here could catch it. The property CAN be checked.
 func _check_the_controls_are_anchored(main) -> void:
 	_t.begin("smoke > the controls are anchored, not placed")
-	var stick: Control = main._stick
-	_t.eq(stick.anchor_bottom, 1.0,
-		"the crane dial is not anchored to the bottom of the viewport - it will drift on a tall screen")
-	_t.eq(stick.anchor_top, 1.0,
-		"the crane dial is anchored to the TOP, so its distance from the bottom depends on the aspect")
-	_t.lt(stick.offset_bottom, 0.0,
-		"the crane dial is offset downward from its anchor and will sit off the bottom of the screen")
-	_t.ok(stick.gui_input.get_connections().size() > 0,
-		"the dial does not handle its own input, so its hit box is a second source of truth")
-	_t.eq(stick.mouse_filter, Control.MOUSE_FILTER_STOP,
-		"the dial does not consume its own touches, so a slew will also register as a swipe")
+	for pad in [main._stick, main._dial]:
+		_t.eq(pad.anchor_bottom, 1.0,
+			"%s is not anchored to the bottom - it will drift on a tall screen" % pad.name)
+		_t.eq(pad.anchor_top, 1.0,
+			"%s is anchored to the TOP, so its distance from the bottom follows the aspect" % pad.name)
+		_t.lt(pad.offset_bottom, 0.0, "%s will sit off the bottom of the screen" % pad.name)
+		_t.ok(pad.gui_input.get_connections().size() > 0,
+			"%s does not handle its own input, so its hit box is a second source of truth" % pad.name)
+		_t.eq(pad.mouse_filter, Control.MOUSE_FILTER_STOP,
+			"%s does not consume its own touches" % pad.name)
+	# And they must not overlap, or a thumb on one drives the other.
+	_t.lt(main._stick.anchor_left, main._dial.anchor_left + 0.001,
+		"the drive stick is not on the left of the crane dial")
 
 
-## The one test that catches inverted controls.
-##
-## Everything else drives the input seam in world coordinates, and `aim(0.5)`
-## putting `yaw` at 0.5 passes just as happily when the camera mirrors the
-## axis. This asks the camera where a point to the crane's right actually lands.
-func _check_screen_right(main) -> void:
-	_t.begin("smoke > world +x is on the right of the screen")
+## The camera has to be BEHIND the machine and looking at it. A chase camera
+## that ends up in front mirrors the picture, and a sibling game shipped
+## inverted steering for its whole life because every test drove the input seam
+## in world coordinates - the layer that bug lives underneath.
+func _check_the_camera_is_behind_the_machine(main) -> void:
+	_t.begin("smoke > the camera is behind the machine, looking in")
+	main.freeze()
 	var cam: Camera3D = main._cam
-	var here := Vector3(0.0, 1.0, main.wz(Tuning.FACE_Z))
-	var to_the_right := here + Vector3(2.0, 0.0, 0.0)
-
-	# `transform`, NOT `global_transform`. A node added during
+	var rig: Node3D = main._rig
+	# `transform`, NOT `global_transform`: a node added during
 	# SceneTree._initialize() is not in the tree yet, and global_transform does
-	# not error for that - it returns IDENTITY, a plausible-looking wrong
-	# answer. Node3D.look_at at least has the decency to fail.
+	# not error for that - it returns IDENTITY, a plausible wrong answer.
 	var inv := cam.transform.affine_inverse()
-	var a := inv * here
-	var b := inv * to_the_right
-	_t.lt(a.z, 0.0, "the building is behind the camera - the camera is facing the wrong way")
-	_t.gt(b.x - a.x, 0.0,
-		"world +x projects to the LEFT of the screen: dragging right will slew the boom the wrong way")
+	var machine: Vector3 = inv * rig.position
+	_t.lt(machine.z, 0.0, "the machine is behind the camera")
+	_t.lt(absf(machine.x), 6.0, "the machine is off the side of the frame")
+	_t.gt(cam.transform.origin.y, rig.position.y, "the camera is below the machine")
 
-	# And the other half, now that the drag aims: a POSITIVE yaw must put the
-	# ball at greater x. Asserting the camera alone would pass on a crane whose
-	# sign was inverted, and the crane alone would pass on a mirrored camera.
-	# The bug lives in whichever of the two the test does not look at.
-	main.freeze()
-	main.sim.aim_to(Tuning.YAW_MAX)
-	main.advance(0.8, 1.0 / 60.0)
-	_t.gt(main.sim.ball_x() - main.sim.x, 0.0,
-		"aiming to a positive yaw swung the ball to the player's LEFT")
-	_t.gt(main._ball.position.x - main._rig.position.x, 0.0,
-		"the ball is DRAWN on the opposite side from where the simulation put it")
+	# Driving forward must carry the machine AWAY from where the camera was,
+	# never toward it.
+	var eye := cam.transform.origin
+	var start: float = eye.distance_to(rig.position)
+	for i in 60:
+		main.sim.drive(1.0, 0.0)
+		main.advance(1.0 / 60.0, 1.0 / 60.0)
+	_t.gt(eye.distance_to(main._rig.position), start,
+		"driving forward moved the machine toward where the camera was - the axes are mirrored")
 	main.freeze()
 
 
-## The assertion the first build did not have, and the one that would have
+## The assertion an earlier build did not have, and the one that would have
 ## caught the only bug Gideon hit. Driven through the REAL scene, because the
 ## missing code was in the renderer's handler and not in Sim.
-func _check_the_site_can_be_left(main) -> void:
-	_t.begin("smoke > a finished site starts the next one")
+func _check_the_level_can_be_left(main) -> void:
+	_t.begin("smoke > a finished level starts the next one")
 	_t.eq(main.sim.over, true, "the demolition is not over, so there is nothing to leave")
-	var site: int = main.sim.level
-	var banked: int = main.sim.rubble
+	var level: int = main.sim.level
+	var won: bool = main.sim.won
 
 	main.advance(main.INTERLUDE_SECONDS * 0.4, 1.0 / 60.0)
-	_t.ok(main._banner.visible, "nothing on screen says what happened to the building")
-	_t.eq(main.sim.level, site, "the next site started before the banner was readable")
+	_t.eq(main.sim.level, level, "the next level started before the banner was readable")
 
 	main.advance(main.INTERLUDE_SECONDS, 1.0 / 60.0)
 	_t.eq(main.sim.over, false,
 		"the game is still frozen after the interlude - this is the bug that shipped")
-	_t.eq(main.sim.level, site + 1, "the next site never started")
-	_t.eq(main.sim.rubble, banked, "the haul was lost moving between sites")
-	_t.ok(not main._banner.visible, "the banner never went away")
-	_t.gt(float(main._floors.multimesh.visible_instance_count), 0.0,
-		"the next site arrived with nothing standing on it")
+	if won:
+		_t.eq(main.sim.level, level + 1, "the next level never started after getting out")
+	else:
+		_t.eq(main.sim.level, 1, "being crushed did not send the run back to the first level")
+	_t.gt(float(main._columns.multimesh.visible_instance_count), 0.0,
+		"the next level arrived with nothing standing in it")
 
 
 func _finish() -> void:

@@ -4,25 +4,22 @@ extends SceneTree
 ##
 ##   godot --headless --script res://test/run_probe.gd
 ##
-## Plays every policy over several buildings and prints the readings a tuning
-## pass needs: the score, how much came down, the worst lean reached, whether
-## it went over, and how many swings were left.
-##
-## The row that matters is DEMOLISHER against RECKLESS. They use the same
-## control and the same effort and differ only in the ORDER they take the bays
-## down, so the gap between them is the size of the decision the game is
-## actually offering.
+## The rows that matter are NUDGER against WRECKER - which says whether speed
+## is really what does the damage - and GREEDY against WRECKER, which says
+## whether the escape is a real cost or a formality.
 
-const LEVELS := [1, 2, 3, 4, 5, 6]
+const LEVELS := [1, 2, 3, 4]
 
 
 func _initialize() -> void:
 	print("")
-	print("  lag %.2fs   topple at %.2f   clean under %.2f   reach at the face %.2f"
-		% [Tuning.ball_lag(), Tuning.TOPPLE_LIMIT, Tuning.LEAN_WARN, Tuning.reach_at_face()])
+	print("  escape margin at level 1: %.1fs   collapse at %.0f%% support   deck %.0f x %.0f"
+		% [Tuning.escape_margin(1), Tuning.COLLAPSE_AT * 100.0, Tuning.DECK_W, Tuning.DECK_D])
+	print("  damage at 4 m/s %.1f | at 8 %.1f | at 13 %.1f   (column has %.0f hp)"
+		% [Tuning.damage_at(4.0), Tuning.damage_at(8.0), Tuning.damage_at(13.0), Tuning.COLUMN_HP])
 	print("")
-	print("  %-11s %5s %4s %6s %7s %7s %6s %6s %6s"
-		% ["policy", "level", "bays", "rubble", "floors", "standing", "worst", "swings", "won"])
+	print("  %-9s %5s %7s %6s %6s %6s %7s %6s %6s"
+		% ["policy", "level", "rubble", "cols", "walls", "hits", "peakBall", "secs", "won"])
 	print("  %s" % "-".repeat(74))
 
 	for name in Policies.ALL:
@@ -33,12 +30,11 @@ func _initialize() -> void:
 			rubble += int(r["rubble"])
 			if r["won"]:
 				wins += 1
-			print("  %-11s %5d %4d %6d %7d %8d %6.2f %6d %6s" % [
-				name, level, Tuning.bays_for(level), r["rubble"], r["floors_down"],
-				r["bays_standing"], r["worst_lean"], r["swings_left"], str(r["won"]),
+			print("  %-9s %5d %7d %6d %6d %6d %7.1f %6.1f %6s" % [
+				name, level, r["rubble"], r["columns_down"], r["walls_down"],
+				r["hits"], r["peak_ball"], r["seconds"], str(r["won"]),
 			])
-		print("  %-11s %5s %4s %6.0f %7s %8s %6s %6s %6d/%d" % [
-			name, "MEAN", "", float(rubble) / LEVELS.size(), "", "", "", "", wins, LEVELS.size()])
+		print("  %-9s %5s %7.0f %6s %6s %6s %7s %6s %6d/%d" % [
+			name, "MEAN", float(rubble) / LEVELS.size(), "", "", "", "", "", wins, LEVELS.size()])
 		print("")
-
 	quit(0)

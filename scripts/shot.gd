@@ -34,7 +34,7 @@ func _initialize() -> void:
 	var mem := {}
 	var step := 1.0 / 60.0
 	for i in int(round(_seconds / step)):
-		Policies.steer(Policies.DEMOLISHER, _main.sim, mem)
+		Policies.steer(Policies.WRECKER, _main.sim, mem)
 		_main.advance(step, step)
 
 
@@ -46,7 +46,7 @@ func _process(_delta: float) -> bool:
 		return false
 	var img := root.get_texture().get_image()
 	img.save_png("user://shot.png")
-	print("wrote %s/shot.png at t=%.1fs  rubble=%d  floors=%d"
-		% [OS.get_user_data_dir(), _seconds, _main.sim.rubble, _main.sim.floors_down])
+	print("wrote %s/shot.png at t=%.1fs  rubble=%d  cols=%d"
+		% [OS.get_user_data_dir(), _seconds, _main.sim.rubble, _main.sim.columns_down])
 	quit(0)
 	return true

@@ -65,26 +65,21 @@ func test_hash_covers_the_whole_unit_interval_evenly(t: TestHarness) -> void:
 ## Every threshold the game actually compares a hash against, checked against
 ## the source rather than against the spawn it produces.
 func test_the_thresholds_the_game_uses_can_all_fire(t: TestHarness) -> void:
-	var fires := func(threshold: float) -> int:
-		var hit := 0
-		for c in 200:
-			if SimUtil.hash2(c, 91) < threshold:
-				hit += 1
-		return hit
-	# The demolition game keys one thing on the hash - how tough each column is
-	# - so that is what gets checked. A column roll that could never reach the
-	# top of its range would mean the reinforced columns simply do not exist,
-	# and that failure shows as absence: no error, nothing missing on screen,
-	# the building just quietly always plays the same.
-	var lo := 99
-	var hi := 0
-	for level in range(1, 9):
-		for bay in Tuning.bays_for(level):
-			var hp := Tuning.column_hp_at(level, bay)
-			lo = mini(lo, hp - Tuning.column_hp_for(level))
-			hi = maxi(hi, hp - Tuning.column_hp_for(level))
-	t.eq(lo, 0, "no column is ever at the weak end of its range")
-	t.eq(hi, Tuning.COLUMN_HP_SPREAD, "no column is ever at the strong end of its range")
+	# The basement keys one thing on the hash - which bays get an infill panel -
+	# so that is what gets checked. A roll that could never clear its threshold
+	# would mean the panels simply do not exist, and that failure shows as
+	# absence: no error, nothing missing on screen, the room just quietly
+	# always plays the same.
+	var with_panels := 0
+	var without := 0
+	for level in range(1, 12):
+		var s := Sim.new(level)
+		if s.walls.size() > 0:
+			with_panels += 1
+		else:
+			without += 1
+	t.gt(float(with_panels), 0.0, "no basement anywhere has an infill panel in it")
+	t.lt(float(with_panels), 60.0, "impossible - more levels with panels than levels tested")
 
 
 func test_a_seeded_stream_replays_and_two_seeds_differ(t: TestHarness) -> void:

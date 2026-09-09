@@ -2,80 +2,70 @@ extends Node3D
 
 ## The shell. Reads `Sim` and draws it; never decides anything.
 ##
-## Everything visible is built here in code rather than laid out in the editor,
-## for two reasons: a procedural game's world is built at runtime anyway, so an
-## editor layout would be a second source of truth; and it keeps the whole
-## project reviewable as text, where a scene tree assembled by clicking is
-## invisible in a diff.
+## Everything visible is built here in code rather than laid out in the editor:
+## a procedural game's world is built at runtime anyway, so an editor layout
+## would be a second source of truth, and building it here keeps the whole
+## project reviewable as text.
 ##
-## THE AXIS DECISION, and it is load bearing.
-##
-## The simulation measures depth INTO the site as positive z. The world draws
-## it as -Z, so the building is at negative z and the camera sits behind the
-## crane at positive z looking along its own default forward.
-##
-## That is not a preference. A camera placed behind an object and turned around
-## to look at it is rotated 180 degrees about Y, which mirrors the X axis:
-## world +X then projects to screen LEFT, so dragging right would slew the boom
-## the wrong way. A sibling game shipped exactly that for its entire life,
-## because every test drove the input seam in world coordinates - the layer the
-## bug lives underneath. Going the other way makes screen right world +X by
-## construction, and `run_smoke.gd` asserts it in camera space anyway.
+## AXES. The simulation works in a 2D plane - `x` across the deck and `y` INTO
+## it. The world maps that to (x, height, -y), so depth runs along -Z and the
+## camera sits behind the machine looking along its own forward. The chase
+## camera turns with the machine, which is fine here in a way it was not in the
+## runner versions of this game: both controls are relative to the MACHINE
+## rather than to the world, so there is no axis for a mirrored camera to
+## invert. `run_smoke.gd` still asserts the camera is behind and facing in.
 
-const FLOOR_POOL := 128
-const COLUMN_POOL := 16
-const DEBRIS_POOL := 200
+const COLUMN_POOL := 24
+const WALL_POOL := 24
+const DEBRIS_POOL := 240
+const SLAB_POOL := 48
 const SAVE_PATH := "user://wrecking-crew.save"
 
 var sim: Sim
 
 var _cam: Camera3D
-var _ground: MeshInstance3D
 var _rig: Node3D
 var _boom: MeshInstance3D
 var _chain: MeshInstance3D
 var _ball: MeshInstance3D
-var _counterweight: MeshInstance3D
-var _floors: MultiMeshInstance3D
 var _columns: MultiMeshInstance3D
+var _walls: MultiMeshInstance3D
 var _debris: MultiMeshInstance3D
+var _slab: MultiMeshInstance3D
+var _dust: GPUParticles3D
 
 var _ui: Control
 var _stick: Control
+var _dial: Control
 var _readout: Label
 var _hud: Label
 var _banner: Label
-var _lean_back: ColorRect
-var _lean_fill: ColorRect
-var _lean_mark: ColorRect
+var _gauge_back: ColorRect
+var _gauge_fill: ColorRect
 
 var _stick_grab := -1
-var _swipe_from := 0.0
-var _swipe_id := -1
-var _swipe_used := false
+var _stick_vec := Vector2.ZERO
+var _dial_grab := -1
 
 var _shake := 0.0
 var _hitstop := 0.0
+var _cam_yaw := 0.0
 
-## Long enough to read what happened, short enough that it never feels like a
-## menu. The game is playable again on the other side without a tap.
-const INTERLUDE_SECONDS := 2.6
+const INTERLUDE_SECONDS := 3.0
 var _interlude := 0.0
 var _interlude_won := false
 var _interlude_text := ""
 
-## Cosmetic only. Drawn and never read back: nothing in `Sim` can see a chunk
-## and no decision depends on one. That is what allows them to exist at all - a
-## debris chunk that could nudge a score would put the outcome of a demolition
-## inside a particle system.
+## Cosmetic only. Nothing in `Sim` can see a chunk and no decision depends on
+## one - which is what allows them to exist at all. A debris chunk that could
+## nudge a score would put the outcome of a demolition inside a particle system.
 var _chunks: Array[Dictionary] = []
+var _slabs: Array[Dictionary] = []
 var _fx_rng := SimRng.new(20260908)
 
 var best_rubble := 0
 var best_site := 1
 
-## Set by the headless harness. When true the frame loop does not step the sim,
-## so `advance()` is the only thing moving time.
 var frozen := false
 var _booted := false
 
@@ -84,8 +74,6 @@ func _ready() -> void:
 	_ensure_booted()
 
 
-## Building the world is idempotent and callable before the first frame.
-##
 ## `_ready` does not run at `add_child()` - it is deferred to the first
 ## processed frame - so a headless harness that adds this node and immediately
 ## calls `advance()` finds `sim` still null. A guard rather than a rule about
@@ -98,19 +86,23 @@ func _ensure_booted() -> void:
 	sim = Sim.new()
 	_load_save()
 	_build_world()
-	sim.column_struck.connect(_on_column_struck)
-	sim.bay_fell.connect(_on_bay_fell)
-	sim.building_down.connect(_on_building_down)
-	sim.toppled.connect(_on_toppled)
-	sim.out_of_swings.connect(_on_out_of_swings)
+	sim.target_hit.connect(_on_target_hit)
+	sim.target_broken.connect(_on_target_broken)
+	sim.collapse_started.connect(_on_collapse_started)
+	sim.escaped.connect(_on_escaped)
+	sim.crushed.connect(_on_crushed)
 	sim.level_finished.connect(_on_level_finished)
 	_sync()
 
 
-## The simulation's depth counts up; the world's counts down. One function,
-## called everywhere, so the two can never be mixed by accident.
-static func wz(sim_z: float) -> float:
-	return -sim_z
+## Sim depth counts up; the world's counts down. One function, called
+## everywhere, so the two can never be mixed by accident.
+static func wz(sim_y: float) -> float:
+	return -sim_y
+
+
+static func to_world(p: Vector2, y: float) -> Vector3:
+	return Vector3(p.x, y, wz(p.y))
 
 
 # --- world ----------------------------------------------------------------
@@ -119,110 +111,247 @@ func _build_world() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 
-	# A real sky rather than a flat colour, and it is not decoration: a metal
-	# has no diffuse term of its own, so its colour comes entirely from what it
-	# reflects. With nothing to reflect the ball renders as specular hotspots
-	# on black, and the instinct is to reduce metalness, which is the wrong fix.
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.20, 0.25, 0.34)
-	sky_mat.sky_horizon_color = Color(0.46, 0.48, 0.50)
-	sky_mat.ground_horizon_color = Color(0.32, 0.31, 0.30)
-	sky_mat.ground_bottom_color = Color(0.16, 0.15, 0.15)
-	sky_mat.sun_angle_max = 24.0
-	var sky := Sky.new()
-	sky.sky_material = sky_mat
-	e.background_mode = Environment.BG_SKY
-	e.sky = sky
-	e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	e.ambient_light_energy = 0.46
+	# A real captured environment, and it is doing three jobs at once rather
+	# than being decoration. It lights the room, because a basement lit only by
+	# a directional light is a flat grey box. It gives the wrecking ball
+	# something to reflect - a metal has no diffuse term of its own, so with
+	# nothing to reflect it renders as specular hotspots on black, and the
+	# instinct to fix that by lowering metalness is the wrong one. And it is
+	# what you see through the ramp, which is the only daylight in the level
+	# and therefore the thing the player drives toward.
+	var pano: Texture2D = load("res://assets/abandoned_parking_1k.hdr")
+	if pano != null:
+		var sky_mat := PanoramaSkyMaterial.new()
+		sky_mat.panorama = pano
+		var sky := Sky.new()
+		sky.sky_material = sky_mat
+		e.background_mode = Environment.BG_SKY
+		e.sky = sky
+		e.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+		e.ambient_light_energy = 0.30
+		e.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
+	else:
+		e.background_mode = Environment.BG_COLOR
+		e.background_color = Color(0.10, 0.11, 0.13)
+		e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+		e.ambient_light_color = Color(0.35, 0.37, 0.42)
+		e.ambient_light_energy = 0.5
 
-	# Cool dust against warm concrete. A warm sun on warm material under a warm
-	# sky has nothing to separate against however far apart the values are -
-	# three passes of darker concrete on the street version kept rendering as
-	# pale boxes until the atmosphere went cold.
+	# Dust hanging in the air. Thin, because the room is small and the point is
+	# depth rather than obscurity.
 	e.fog_enabled = true
-	e.fog_light_color = Color(0.44, 0.46, 0.49)
-	e.fog_density = 0.0055
-	e.fog_sky_affect = 0.15
+	e.fog_light_color = Color(0.42, 0.44, 0.48)
+	e.fog_density = 0.010
+	e.fog_sky_affect = 0.0
 	e.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	e.tonemap_white = 1.15
+	e.tonemap_white = 1.4
 	env.environment = e
 	add_child(env)
 
+	# Daylight coming IN through the ramp. Angled down the room so it rakes
+	# across the columns, which is what gives a flat concrete box any shape.
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-38, 132, 0)
-	sun.light_energy = 1.45
-	sun.light_color = Color(1.0, 0.94, 0.82)
+	sun.rotation_degrees = Vector3(-24, 8, 0)
+	sun.light_energy = 1.1
+	sun.light_color = Color(1.0, 0.95, 0.86)
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 80.0
+	sun.directional_shadow_max_distance = 60.0
 	add_child(sun)
 
 	_cam = Camera3D.new()
-	_cam.fov = 58
-	_cam.far = 240
+	_cam.fov = 68
+	_cam.far = 160
 	add_child(_cam)
 
-	_ground = MeshInstance3D.new()
-	var gm := BoxMesh.new()
-	gm.size = Vector3(90.0, 0.4, 90.0)
-	_ground.mesh = gm
-	_ground.material_override = _mat(Color(0.34, 0.33, 0.31), 0.95)
-	_ground.position = Vector3(0, -0.2, wz(6.0))
-	_ground.name = "Ground"
-	add_child(_ground)
-
-	_build_neighbours()
+	_build_shell()
+	_build_lights()
 	_build_rig()
 
-	# The building, one FLOOR CELL at a time. That is what makes the health bar
-	# and the silhouette the same object: a bay coming down is not an animation,
-	# it is that column's cells no longer being drawn. There is nothing to keep
-	# in sync because there is only one thing.
-	_floors = _make_multimesh(BoxMesh.new(), FLOOR_POOL, true)
-	(_floors.multimesh.mesh as BoxMesh).size = Vector3(
-		Tuning.BAY_WIDTH - 0.12, Tuning.FLOOR_HEIGHT - 0.12, Tuning.BUILDING_DEPTH)
-	_floors.material_override = _mat(Color.WHITE, 0.88)
-	_floors.material_override.vertex_color_use_as_albedo = true
-	_floors.name = "Floors"
-
-	# The columns are drawn separately and in the hazard colour, because they
-	# are the only thing on the building the player can actually act on. Every
-	# other surface is scenery. One colour family for "this is the target", the
-	# way a hazard gets one on a runner.
-	_columns = _make_multimesh(BoxMesh.new(), COLUMN_POOL, true)
-	(_columns.multimesh.mesh as BoxMesh).size = Vector3(
-		Tuning.COLUMN_HALF_WIDTH * 2.0, Tuning.FLOOR_HEIGHT * 1.25, 1.4)
-	_columns.material_override = _mat(Color.WHITE, 0.45)
+	# Columns and panels are instanced, so the draw count does not move with
+	# how much of the room is still standing - and `visible_instance_count` is
+	# a number the smoke test can compare against the model. A render path that
+	# silently stops drawing and a subsystem that does not exist look identical
+	# from outside.
+	var col_mesh := CylinderMesh.new()
+	col_mesh.top_radius = Tuning.COLUMN_RADIUS
+	col_mesh.bottom_radius = Tuning.COLUMN_RADIUS
+	col_mesh.height = Tuning.CEILING
+	col_mesh.radial_segments = 12
+	_columns = _make_multimesh(col_mesh, COLUMN_POOL, true)
+	_columns.material_override = _concrete(Color.WHITE, 2.0)
 	_columns.material_override.vertex_color_use_as_albedo = true
 	_columns.name = "Columns"
 
-	_debris = _make_multimesh(BoxMesh.new(), DEBRIS_POOL, true)
-	(_debris.multimesh.mesh as BoxMesh).size = Vector3(0.55, 0.55, 0.55)
-	_debris.material_override = _mat(Color.WHITE, 0.95)
+	var wall_mesh := BoxMesh.new()
+	wall_mesh.size = Vector3(1.0, Tuning.CEILING * 0.86, Tuning.WALL_THICK * 2.0)
+	_walls = _make_multimesh(wall_mesh, WALL_POOL, true)
+	_walls.material_override = _concrete(Color.WHITE, 3.0)
+	_walls.material_override.vertex_color_use_as_albedo = true
+	_walls.name = "Walls"
+
+	var chunk := BoxMesh.new()
+	chunk.size = Vector3(0.5, 0.5, 0.5)
+	_debris = _make_multimesh(chunk, DEBRIS_POOL, true)
+	_debris.material_override = _concrete(Color.WHITE, 1.0)
 	_debris.material_override.vertex_color_use_as_albedo = true
 	_debris.name = "Debris"
 
+	# Slab sections, for the collapse. They are drawn out of the same layer the
+	# ceiling is, so a piece coming down is the ceiling coming down.
+	var slab_mesh := BoxMesh.new()
+	slab_mesh.size = Vector3(Tuning.BAY * 0.9, 0.5, Tuning.BAY * 0.9)
+	_slab = _make_multimesh(slab_mesh, SLAB_POOL, true)
+	_slab.material_override = _concrete(Color.WHITE, 2.5)
+	_slab.material_override.vertex_color_use_as_albedo = true
+	_slab.name = "Slab"
+
+	_build_dust()
 	_build_hud()
 
 
-## The blocks either side of the site. They are the stake: the whole game is
-## not putting the building on them, so they have to be visibly THERE and
-## visibly close, or the lean gauge is a number about nothing.
-func _build_neighbours() -> void:
-	for side in [-1.0, 1.0]:
-		var n := MeshInstance3D.new()
-		var m := BoxMesh.new()
-		m.size = Vector3(8.0, 17.0, 12.0)
-		n.mesh = m
-		# Lighter than the condemned building, so the thing you must NOT hit
-		# reads as a different object from the thing you must. Separated by
-		# lightness rather than hue - the rule that finally made the street
-		# version legible - and close enough to be in frame, because a stake
-		# you cannot see is not a stake.
-		n.material_override = _mat(Color(0.46, 0.45, 0.46), 0.9)
-		n.position = Vector3(side * 13.5, 8.5, wz(Tuning.FACE_Z + 3.0))
-		n.name = "Neighbour%d" % int(side)
-		add_child(n)
+## Concrete, with a real normal map on it.
+##
+## The one import that has paid off twice across these games: a normal map
+## carries no colour, so the hand-tuned palette survives intact and every
+## surface gains relief. Take the normal out of a CC0 PBR set and leave the
+## colour map behind - that half is style-neutral, and the other half is the
+## join that shows in the first frame.
+##
+## `uv1_scale` matters more than it looks. The maps are one square metre of
+## concrete; tiled per-object they would restart at every column and the room
+## would read as a stack of identical props.
+func _concrete(c: Color, tile: float) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.roughness = 0.92
+	m.metallic = 0.0
+	m.uv1_scale = Vector3(tile, tile, tile)
+	var n: Texture2D = load("res://assets/concrete_normal.webp")
+	if n != null:
+		m.normal_enabled = true
+		m.normal_texture = n
+		# Far higher than looks reasonable on a still. Spreading one tile over
+		# several metres leaves only the low-frequency component, so the value
+		# that looks wrong is the correct one - and it has to be judged under a
+		# moving light, not on a flat-lit screenshot.
+		m.normal_scale = 1.1
+	var r: Texture2D = load("res://assets/concrete_rough.webp")
+	if r != null:
+		# Roughness is DATA, not colour, so it must not be sRGB-decoded. Godot
+		# handles that through the texture channel, but the mistake is the same
+		# family as the one that makes a canvas env map four times too bright.
+		m.roughness_texture = r
+	return m
+
+
+## The room: floor, ceiling slab, and the perimeter with a gap at the ramp.
+func _build_shell() -> void:
+	var floor_mesh := BoxMesh.new()
+	floor_mesh.size = Vector3(Tuning.DECK_W + 6.0, 0.6, Tuning.DECK_D + Tuning.RAMP_DEPTH * 2.0 + 6.0)
+	var deck := MeshInstance3D.new()
+	deck.mesh = floor_mesh
+	deck.material_override = _concrete(Color(0.30, 0.30, 0.31), 12.0)
+	deck.position = Vector3(0, -0.3, wz(-Tuning.RAMP_DEPTH * 0.5))
+	deck.name = "Deck"
+	add_child(deck)
+
+	# The slab overhead is DOWNSTAND BEAMS rather than a solid lid, and that is
+	# a camera decision as much as an art one.
+	#
+	# A 4.6-metre ceiling leaves nowhere for a camera to go: at 15 metres back
+	# it is through the wall, and pulled inside it sits on top of the machine.
+	# Every framing tried under a solid roof was either inside the concrete or
+	# two metres from the cab. Looking down THROUGH the structure solves it
+	# outright - and a grid of beams is what the underside of a parking deck
+	# actually looks like, so the room still reads as a room from above.
+	var beam_mat := _concrete(Color(0.26, 0.26, 0.27), 4.0)
+	var roof := Node3D.new()
+	roof.name = "Roof"
+	add_child(roof)
+	for row in Tuning.GRID_Z:
+		var b := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = Vector3(Tuning.DECK_W, 0.6, 0.9)
+		b.mesh = bm
+		b.material_override = beam_mat
+		b.position = Vector3(0, Tuning.CEILING - 0.3, wz(Tuning.column_z(row)))
+		roof.add_child(b)
+	# One direction only. Beams both ways made a grid the camera had to look
+	# through from above, and half the floor was behind concrete at any moment -
+	# a ceiling the player cannot see past is a ceiling that has taken the level
+	# away from them.
+
+	# Perimeter. The back wall is in two pieces with the ramp mouth between
+	# them, which is the only opening in the room and therefore the only light.
+	var hw := Tuning.DECK_W * 0.5
+	var hd := Tuning.DECK_D * 0.5
+	_wall_slab(Vector3(-hw - 0.4, Tuning.CEILING * 0.5, 0), Vector3(0.8, Tuning.CEILING, Tuning.DECK_D))
+	_wall_slab(Vector3(hw + 0.4, Tuning.CEILING * 0.5, 0), Vector3(0.8, Tuning.CEILING, Tuning.DECK_D))
+	_wall_slab(Vector3(0, Tuning.CEILING * 0.5, wz(hd) - 0.4), Vector3(Tuning.DECK_W, Tuning.CEILING, 0.8))
+	var side := (Tuning.DECK_W - Tuning.RAMP_W) * 0.5
+	for s in [-1.0, 1.0]:
+		_wall_slab(Vector3(s * (Tuning.RAMP_W + side) * 0.5, Tuning.CEILING * 0.5, wz(-hd) + 0.4),
+			Vector3(side, Tuning.CEILING, 0.8))
+
+
+func _wall_slab(at: Vector3, size: Vector3) -> void:
+	var m := MeshInstance3D.new()
+	var mesh := BoxMesh.new()
+	mesh.size = size
+	m.mesh = mesh
+	m.material_override = _concrete(Color(0.27, 0.27, 0.28), 6.0)
+	m.position = at
+	add_child(m)
+
+
+## Strip lights on the ceiling. No shadows on any of them: a handful of
+## shadow-casting omnis is the fastest way to lose a phone's frame budget, and
+## the shape in the room comes from the raking daylight and the normal maps.
+func _build_lights() -> void:
+	for row in Tuning.GRID_Z:
+		for col in Tuning.GRID_X:
+			if (row + col) % 2 == 1:
+				continue
+			var l := OmniLight3D.new()
+			l.position = Vector3(Tuning.column_x(col), Tuning.CEILING - 0.5, wz(Tuning.column_z(row)))
+			l.light_energy = 1.9
+			l.light_color = Color(1.0, 0.92, 0.78)
+			l.omni_range = Tuning.BAY * 1.5
+			l.shadow_enabled = false
+			add_child(l)
+
+
+func _build_dust() -> void:
+	_dust = GPUParticles3D.new()
+	_dust.amount = 90
+	_dust.lifetime = 7.0
+	_dust.visibility_aabb = AABB(
+		Vector3(-Tuning.DECK_W * 0.5, 0, -Tuning.DECK_D * 0.5),
+		Vector3(Tuning.DECK_W, Tuning.CEILING, Tuning.DECK_D))
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(Tuning.DECK_W * 0.5, Tuning.CEILING * 0.5, Tuning.DECK_D * 0.5)
+	pm.gravity = Vector3(0, -0.05, 0)
+	pm.initial_velocity_min = 0.05
+	pm.initial_velocity_max = 0.25
+	pm.scale_min = 0.02
+	pm.scale_max = 0.06
+	pm.color = Color(0.85, 0.82, 0.74, 0.30)
+	_dust.process_material = pm
+	var qm := QuadMesh.new()
+	qm.size = Vector2(0.5, 0.5)
+	var dm := StandardMaterial3D.new()
+	dm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	dm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	dm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	dm.vertex_color_use_as_albedo = true
+	dm.albedo_color = Color(0.8, 0.78, 0.7, 0.25)
+	qm.material = dm
+	_dust.draw_pass_1 = qm
+	_dust.position = Vector3(0, Tuning.CEILING * 0.5, 0)
+	_dust.name = "Dust"
+	add_child(_dust)
 
 
 func _build_rig() -> void:
@@ -232,72 +361,64 @@ func _build_rig() -> void:
 
 	var tracks := MeshInstance3D.new()
 	var tm := BoxMesh.new()
-	tm.size = Vector3(2.6, 0.7, 4.4)
+	tm.size = Vector3(2.7, 0.8, 4.2)
 	tracks.mesh = tm
-	tracks.material_override = _mat(Color(0.13, 0.13, 0.14), 0.85)
-	tracks.position.y = 0.35
+	tracks.material_override = _mat(Color(0.11, 0.11, 0.12), 0.85, 0.2)
+	tracks.position.y = 0.4
 	_rig.add_child(tracks)
 
 	var body := MeshInstance3D.new()
 	var bm := BoxMesh.new()
-	bm.size = Vector3(2.1, 1.2, 3.0)
+	bm.size = Vector3(2.2, 1.3, 3.1)
 	body.mesh = bm
-	# Plant yellow, dulled and dusted. A saturated one reads as a toy.
-	body.material_override = _mat(Color(0.62, 0.47, 0.11), 0.78)
-	body.position = Vector3(0, 1.3, -0.2)
+	# Plant yellow, dulled and dusted. A saturated one reads as a toy, and the
+	# whole art direction is a machine that has been working all week.
+	body.material_override = _mat(Color(0.55, 0.42, 0.10), 0.72, 0.25)
+	body.position = Vector3(0, 1.4, -0.3)
 	_rig.add_child(body)
+
+	var cab := MeshInstance3D.new()
+	var cm := BoxMesh.new()
+	cm.size = Vector3(1.4, 1.2, 1.4)
+	cab.mesh = cm
+	cab.material_override = _mat(Color(0.14, 0.15, 0.17), 0.35, 0.1)
+	cab.position = Vector3(-0.35, 2.6, -0.7)
+	_rig.add_child(cab)
 
 	_boom = MeshInstance3D.new()
 	var boom_mesh := BoxMesh.new()
-	boom_mesh.size = Vector3(0.42, 0.42, 1.0)
+	boom_mesh.size = Vector3(0.4, 0.4, 1.0)
 	_boom.mesh = boom_mesh
-	_boom.material_override = _mat(Color(0.58, 0.44, 0.12), 0.8)
+	_boom.material_override = _mat(Color(0.52, 0.40, 0.10), 0.75, 0.25)
 	add_child(_boom)
-
-	# Opposite the boom. Not decoration: it is the only thing on screen that
-	# says which way the TURRET is facing when the boom is pointed away from
-	# the camera, and a player who cannot read their own aim is guessing.
-	_counterweight = MeshInstance3D.new()
-	var cw := BoxMesh.new()
-	cw.size = Vector3(1.8, 1.0, 1.3)
-	_counterweight.mesh = cw
-	_counterweight.material_override = _mat(Color(0.24, 0.23, 0.22), 0.8)
-	add_child(_counterweight)
 
 	_chain = MeshInstance3D.new()
 	var chain_mesh := BoxMesh.new()
-	chain_mesh.size = Vector3(0.14, 0.14, 1.0)
+	chain_mesh.size = Vector3(0.12, 0.12, 1.0)
 	_chain.mesh = chain_mesh
-	_chain.material_override = _mat(Color(0.28, 0.27, 0.26), 0.55)
+	_chain.material_override = _mat(Color(0.22, 0.21, 0.20), 0.5, 0.8)
 	add_child(_chain)
 
 	_ball = MeshInstance3D.new()
 	var ball_mesh := SphereMesh.new()
 	ball_mesh.radius = Tuning.BALL_RADIUS
 	ball_mesh.height = Tuning.BALL_RADIUS * 2.0
-	ball_mesh.radial_segments = 20
-	ball_mesh.rings = 12
+	ball_mesh.radial_segments = 24
+	ball_mesh.rings = 14
 	_ball.mesh = ball_mesh
-	var ball_mat := _mat(Color(0.19, 0.18, 0.17), 0.34)
-	ball_mat.metallic = 0.85
-	_ball.material_override = ball_mat
+	_ball.material_override = _mat(Color(0.16, 0.15, 0.15), 0.32, 0.9)
 	_ball.name = "Ball"
 	add_child(_ball)
 
 
-func _mat(c: Color, rough: float = 0.85) -> StandardMaterial3D:
+func _mat(c: Color, rough: float, metal: float) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
 	m.roughness = rough
-	m.metallic = 0.0
+	m.metallic = metal
 	return m
 
 
-## `visible_instance_count` is the whole reason to use a MultiMesh rather than
-## a pool of nodes: it is a number the tests can compare against the model. A
-## render path that silently stops drawing and a subsystem that does not exist
-## look identical from outside, and that has cost a full tuning pass on another
-## game here.
 func _make_multimesh(mesh: Mesh, pool: int, colours: bool) -> MultiMeshInstance3D:
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
@@ -316,17 +437,27 @@ func _make_multimesh(mesh: Mesh, pool: int, colours: bool) -> MultiMeshInstance3
 ## THE LAYOUT RULE, learned by shipping it wrong.
 ##
 ## `window/stretch/aspect = "expand"` keeps the base WIDTH and extends the
-## HEIGHT to the device's aspect. The base is 1080x1920; an S26 Ultra is about
+## HEIGHT to the device's aspect. The base is 1080x1920; the phone is about
 ## 19.5:9, so the canvas is roughly 1080x2340. Laying anything out against the
 ## number 1920 puts it hundreds of pixels off, and the report was "the icons
 ## are about half an inch too high".
 ##
-## So: NOTHING here is positioned against a literal screen size. One Control
-## fills the viewport, everything anchors to that, and every interactive
-## control handles its OWN input. Position and hit box are then the same object.
-const STICK_SIZE := 380.0
-const STICK_BOTTOM := 190.0
-const SWIPE_FRACTION := 0.12
+## So: NOTHING is positioned against a literal screen size. One Control fills
+## the viewport, everything anchors to it, and every interactive control
+## handles its OWN input - position and hit box are then the same object.
+## How far back and how high the camera sits. Both are bounded by the room:
+## the ceiling is 4.6 metres, so there is no "pull back and up" available and
+## the distance has to do all the work.
+## Above the beams, looking down into the deck. The height is what makes the
+## whole room legible at once - which is what the player needs, because the
+## thing being judged is the ARC the ball sweeps and which columns it will pass
+## through.
+const CAM_BACK := 11.0
+const CAM_HEIGHT := 23.0
+
+const PAD := 200.0
+const PAD_MARGIN := 70.0
+const PAD_BOTTOM := 210.0
 
 
 func _build_hud() -> void:
@@ -341,42 +472,36 @@ func _build_hud() -> void:
 	layer.add_child(_ui)
 
 	_readout = Label.new()
-	_readout.position = Vector2(46, 56)
-	_readout.add_theme_font_size_override("font_size", 62)
+	_readout.position = Vector2(46, 52)
+	_readout.add_theme_font_size_override("font_size", 60)
 	_readout.add_theme_color_override("font_color", Color(1, 0.96, 0.88))
 	_readout.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
 	_readout.add_theme_constant_override("outline_size", 12)
 	_ui.add_child(_readout)
 
-	# The lean gauge. Centred, because what it measures is whether the building
-	# is centred - a bar that fills from one end would be saying the wrong
-	# thing about a quantity that has two directions.
-	_lean_back = ColorRect.new()
-	_lean_back.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_lean_back.anchor_left = 0.5
-	_lean_back.anchor_right = 0.5
-	_lean_back.offset_left = -300
-	_lean_back.offset_right = 300
-	_lean_back.offset_top = 150
-	_lean_back.offset_bottom = 176
-	_lean_back.color = Color(0, 0, 0, 0.45)
-	_ui.add_child(_lean_back)
+	# The support gauge. It empties as the room is taken apart, and it is the
+	# only thing telling the player how close the slab is to letting go - so it
+	# is a direct reading of `integrity` rather than a scaled one, and it
+	# changes colour at the threshold the simulation actually uses.
+	_gauge_back = ColorRect.new()
+	_gauge_back.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_gauge_back.anchor_left = 0.5
+	_gauge_back.anchor_right = 0.5
+	_gauge_back.offset_left = -290
+	_gauge_back.offset_right = 290
+	_gauge_back.offset_top = 132
+	_gauge_back.offset_bottom = 158
+	_gauge_back.color = Color(0, 0, 0, 0.5)
+	_ui.add_child(_gauge_back)
 
-	_lean_fill = ColorRect.new()
-	_lean_fill.color = Color(0.45, 0.85, 0.45)
-	_lean_back.add_child(_lean_fill)
-
-	# The centre line, so "upright" is a place on the gauge rather than a
-	# number the player has to remember.
-	_lean_mark = ColorRect.new()
-	_lean_mark.color = Color(1, 1, 1, 0.5)
-	_lean_mark.position = Vector2(298, -6)
-	_lean_mark.size = Vector2(4, 38)
-	_lean_back.add_child(_lean_mark)
+	_gauge_fill = ColorRect.new()
+	_gauge_fill.position = Vector2(3, 3)
+	_gauge_fill.color = Color(0.45, 0.85, 0.45)
+	_gauge_back.add_child(_gauge_fill)
 
 	_hud = Label.new()
-	_hud.position = Vector2(46, 186)
-	_hud.add_theme_font_size_override("font_size", 34)
+	_hud.position = Vector2(46, 168)
+	_hud.add_theme_font_size_override("font_size", 32)
 	_hud.add_theme_color_override("font_color", Color(0.94, 0.92, 0.88))
 	_hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	_hud.add_theme_constant_override("outline_size", 9)
@@ -385,92 +510,134 @@ func _build_hud() -> void:
 	_banner = Label.new()
 	_banner.anchor_left = 0.0
 	_banner.anchor_right = 1.0
-	_banner.anchor_top = 0.36
-	_banner.anchor_bottom = 0.36
+	_banner.anchor_top = 0.34
+	_banner.anchor_bottom = 0.34
 	_banner.offset_bottom = 130
 	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_banner.add_theme_font_size_override("font_size", 78)
+	_banner.add_theme_font_size_override("font_size", 76)
 	_banner.add_theme_color_override("font_color", Color(1.0, 0.86, 0.42))
 	_banner.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	_banner.add_theme_constant_override("outline_size", 16)
 	_banner.visible = false
 	_ui.add_child(_banner)
 
-	# The crane dial: anchored to the bottom CENTRE of whatever the viewport
-	# actually is, drawing the machine seen from above, so the control and the
-	# thing it controls are the same picture.
-	_stick = Control.new()
-	_stick.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_stick.custom_minimum_size = Vector2(STICK_SIZE, STICK_SIZE)
-	_stick.size = Vector2(STICK_SIZE, STICK_SIZE)
-	_stick.offset_left = -STICK_SIZE * 0.5
-	_stick.offset_right = STICK_SIZE * 0.5
-	_stick.offset_top = -STICK_SIZE - STICK_BOTTOM
-	_stick.offset_bottom = -STICK_BOTTOM
-	_stick.mouse_filter = Control.MOUSE_FILTER_STOP
-	_stick.name = "Stick"
-	_stick.gui_input.connect(_on_stick_input)
-	_stick.draw.connect(_draw_stick)
+	# Left thumb drives, right thumb swings. Two sticks, because there are two
+	# things to do at once and one of them - keeping the ball moving - never
+	# stops mattering.
+	_stick = _make_pad("Stick", true)
+	_dial = _make_pad("Dial", false)
 	_ui.add_child(_stick)
+	_ui.add_child(_dial)
 
 
-## Drawn rather than assembled from Panels, because what it needs to show is a
-## machine seen from above with a boom pointing somewhere - three draw calls
-## and no nodes.
-##
-## The boom is drawn from `sim.yaw` directly, never from the 3D boom's
-## transform, so the control and the world read one source.
+func _make_pad(name: String, left: bool) -> Control:
+	var c := Control.new()
+	c.set_anchors_preset(Control.PRESET_BOTTOM_LEFT if left else Control.PRESET_BOTTOM_RIGHT)
+	c.custom_minimum_size = Vector2(PAD, PAD)
+	c.size = Vector2(PAD, PAD)
+	if left:
+		c.offset_left = PAD_MARGIN
+		c.offset_right = PAD_MARGIN + PAD
+	else:
+		c.offset_left = -PAD_MARGIN - PAD
+		c.offset_right = -PAD_MARGIN
+	c.offset_top = -PAD_BOTTOM - PAD
+	c.offset_bottom = -PAD_BOTTOM
+	c.mouse_filter = Control.MOUSE_FILTER_STOP
+	c.name = name
+	if left:
+		c.gui_input.connect(_on_stick_input)
+		c.draw.connect(_draw_stick)
+	else:
+		c.gui_input.connect(_on_dial_input)
+		c.draw.connect(_draw_dial)
+	return c
+
+
+## The drive stick. Drawn as a ring with a knob, because a control the player
+## cannot see is one they have to be told about, and there is nobody here to
+## tell them.
 func _draw_stick() -> void:
-	var r := STICK_SIZE * 0.5
+	var r := PAD * 0.5
 	var c := Vector2(r, r)
-	var lit: float = 0.55 if _stick_grab >= 0 else 0.32
+	var lit: float = 0.6 if _stick_grab >= 0 else 0.3
+	_stick.draw_circle(c, r, Color(0.05, 0.05, 0.06, 0.32))
+	_stick.draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(1.0, 0.86, 0.42, lit), 4.0)
+	_stick.draw_circle(c + _stick_vec * (r * 0.55), r * 0.28, Color(0.95, 0.85, 0.55, 0.85))
 
-	_stick.draw_circle(c, r, Color(0.05, 0.05, 0.06, 0.34))
-	_stick.draw_arc(c, r - 4.0, 0.0, TAU, 64, Color(1.0, 0.86, 0.42, lit), 4.0)
 
-	for stop in [-Tuning.YAW_MAX, Tuning.YAW_MAX]:
-		var d := Vector2(sin(stop), -cos(stop))
-		_stick.draw_line(c + d * (r * 0.62), c + d * (r - 8.0),
-			Color(1.0, 0.86, 0.42, 0.22), 3.0)
+## The crane dial, drawn as the machine seen from above with the boom pointing
+## where it actually points - so the control shows STATE, not just input, and
+## the player can read their aim without looking away from the room.
+func _draw_dial() -> void:
+	var r := PAD * 0.5
+	var c := Vector2(r, r)
+	var lit: float = 0.6 if _dial_grab >= 0 else 0.3
+	_dial.draw_circle(c, r, Color(0.05, 0.05, 0.06, 0.32))
+	_dial.draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(1.0, 0.86, 0.42, lit), 4.0)
 
-	var dir := Vector2(sin(sim.yaw), -cos(sim.yaw))
+	var dir := Vector2(sin(sim.turret), -cos(sim.turret))
 	var body := PackedVector2Array([
-		c + Vector2(-30, -34), c + Vector2(30, -34),
-		c + Vector2(30, 34), c + Vector2(-30, 34)])
-	_stick.draw_colored_polygon(body, Color(0.22, 0.21, 0.20, 0.9))
-	_stick.draw_line(c - dir * 34.0, c + dir * (r * 0.80), Color(0.86, 0.68, 0.20, 0.95), 13.0)
-	_stick.draw_circle(c - dir * 40.0, 15.0, Color(0.30, 0.29, 0.28, 0.95))
-	_stick.draw_circle(c, 21.0, Color(0.42, 0.40, 0.36, 0.95))
+		c + Vector2(-16, -20), c + Vector2(16, -20), c + Vector2(16, 20), c + Vector2(-16, 20)])
+	_dial.draw_colored_polygon(body, Color(0.22, 0.21, 0.20, 0.9))
+	_dial.draw_line(c - dir * 18.0, c + dir * (r * 0.78), Color(0.86, 0.68, 0.20, 0.95), 9.0)
+	_dial.draw_circle(c, 12.0, Color(0.42, 0.40, 0.36, 0.95))
 
-	# And the ball, at its real bearing rather than the boom's - the gap
-	# between the two IS the lag, and this is the one place it can be read
-	# without taking your eyes off the building.
-	var ball_dir := Vector2(sin(sim.bearing), -cos(sim.bearing))
-	var reach: float = clampf(sim.radius / Tuning.RADIUS_MAX, 0.0, 1.0)
-	_stick.draw_circle(c + ball_dir * (r * 0.46 + r * 0.42 * reach), 16.0,
-		Color(0.92, 0.86, 0.72, 0.95))
+	# The ball, in the machine's own frame - so the gap between the boom and the
+	# ball, which is the whole feel of the game, is readable on the control.
+	var rel := (sim.ball - sim.pos).rotated(sim.heading)
+	var scaled := rel / (Tuning.BOOM_LEN + Tuning.CHAIN) * (r * 0.82)
+	_dial.draw_circle(c + Vector2(scaled.x, -scaled.y), 11.0, Color(0.92, 0.86, 0.72, 0.95))
 
 
-## Absolute rather than relative: on a dial the thumb's position IS the value,
-## and a relative mapping would let the boom and the drawing drift apart.
 func _on_stick_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
 			_stick_grab = event.index if event is InputEventScreenTouch else 0
-			_aim_from_stick(event.position)
+			_read_stick(event.position)
 		else:
 			_stick_grab = -1
+			_stick_vec = Vector2.ZERO
+			sim.drive(0.0, 0.0)
 		_stick.accept_event()
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _stick_grab >= 0:
-			_aim_from_stick(event.position)
+			_read_stick(event.position)
 			_stick.accept_event()
 
 
-func _aim_from_stick(local: Vector2) -> void:
-	var r := STICK_SIZE * 0.5
-	var off := (local - Vector2(r, r)) / (r * 0.82)
-	sim.aim_to(clampf(off.x, -1.0, 1.0) * Tuning.YAW_MAX)
+func _read_stick(local: Vector2) -> void:
+	var r := PAD * 0.5
+	_stick_vec = ((local - Vector2(r, r)) / (r * 0.78)).limit_length(1.0)
+	# Up is forward, and the stick's y grows downward - so the throttle is the
+	# negated component. Steering is the horizontal one, and both are relative
+	# to the MACHINE, which is why a chase camera that turns cannot invert them.
+	sim.drive(-_stick_vec.y, _stick_vec.x)
+
+
+func _on_dial_input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch or event is InputEventMouseButton:
+		if event.pressed:
+			_dial_grab = event.index if event is InputEventScreenTouch else 0
+			_read_dial(event.position)
+		else:
+			_dial_grab = -1
+		_dial.accept_event()
+	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
+		if _dial_grab >= 0:
+			_read_dial(event.position)
+			_dial.accept_event()
+
+
+func _read_dial(local: Vector2) -> void:
+	var r := PAD * 0.5
+	var off := local - Vector2(r, r)
+	if off.length() < r * 0.2:
+		return
+	# The angle the thumb is at IS the boom's angle. Absolute rather than
+	# relative, because on a dial the thumb's position is the value - and a
+	# relative mapping would let the thumb and the drawn boom drift apart.
+	sim.aim_to(atan2(off.x, -off.y))
 
 
 # --- loop -----------------------------------------------------------------
@@ -482,8 +649,9 @@ func _process(delta: float) -> void:
 
 
 func _tick(dt: float) -> void:
-	# Hit stop. Freezing the simulation for a few dozen milliseconds on an
-	# impact makes the same animation read as a different game.
+	# Hit stop. Freezing for a few dozen milliseconds on an impact makes the
+	# same animation read as a different game, and it is the highest value per
+	# line of code in the whole toolbox.
 	if _hitstop > 0.0:
 		_hitstop -= dt
 	else:
@@ -493,12 +661,8 @@ func _tick(dt: float) -> void:
 	_sync()
 
 
-## The headless seam. `_process` computes a delta and calls `_tick`; this steps
-## it at a fixed delta instead, so a whole demolition compresses into one call,
-## deterministically and far faster than real time, with no window open.
-##
-## Freeze first, or every recorded number is a function of how fast the machine
-## boots.
+## The headless seam. Freeze first, or every recorded number is a function of
+## how fast the machine boots.
 func advance(seconds: float, step: float = 1.0 / 60.0) -> void:
 	_ensure_booted()
 	var n := maxi(1, int(round(seconds / step)))
@@ -511,40 +675,49 @@ func freeze(start_level: int = 1) -> void:
 	frozen = true
 	sim.restart(start_level)
 	_chunks.clear()
+	_slabs.clear()
 	_shake = 0.0
 	_hitstop = 0.0
 	_interlude = 0.0
+	_cam_yaw = sim.heading
 	_sync()
 
 
 # --- feedback -------------------------------------------------------------
 
-func _on_column_struck(bay: int, hp_left: int) -> void:
-	_burst(Tuning.bay_x(sim.level, bay), Tuning.FACE_Z, 2.0, 12, 0.7)
-	_shake = maxf(_shake, 0.22)
-	_hitstop = maxf(_hitstop, 0.045)
+## Three channels on every impact - something you see, something that moves the
+## frame, and a freeze. Any one alone reads as cheap. All of them are scaled to
+## the ball's SPEED, so a hard hit and a glancing one are told apart before the
+## damage number is.
+func _on_target_hit(kind: int, index: int, speed: float, at: Vector2) -> void:
+	var force: float = clampf(speed / Tuning.HIT_FULL_SPEED, 0.1, 1.4)
+	_burst(at, 1.4, int(6.0 + 16.0 * force), force)
+	_shake = maxf(_shake, 0.12 + 0.45 * force)
+	_hitstop = maxf(_hitstop, 0.02 + 0.05 * force)
 
 
-func _on_bay_fell(bay: int, floors: int) -> void:
-	# The whole stack comes down, so the debris comes off the whole height.
-	for f in floors:
-		_burst(Tuning.bay_x(sim.level, bay), Tuning.FACE_Z,
-			Tuning.FLOOR_HEIGHT * (float(f) + 0.5), 7, 0.9)
-	_shake = maxf(_shake, 0.55)
-	_hitstop = maxf(_hitstop, 0.09)
+func _on_target_broken(kind: int, index: int, at: Vector2) -> void:
+	var n := 30 if kind == Sim.COLUMN else 18
+	for h in 4:
+		_burst(at, 0.8 + float(h) * 1.1, n / 4, 1.2)
+	_shake = maxf(_shake, 0.9)
+	_hitstop = maxf(_hitstop, 0.10)
+	if kind == Sim.COLUMN:
+		_drop_slab_over(at)
 
 
-func _on_building_down(clean: bool) -> void:
-	_interlude_text = "CLEAN DROP" if clean else "DOWN"
+func _on_collapse_started() -> void:
+	_interlude_text = ""
+	_shake = maxf(_shake, 1.2)
 
 
-func _on_toppled(direction: float) -> void:
-	_interlude_text = "IT WENT OVER"
-	_shake = maxf(_shake, 1.1)
+func _on_escaped(seconds_left: float) -> void:
+	_interlude_text = "OUT WITH %.1fs" % maxf(0.0, seconds_left)
 
 
-func _on_out_of_swings() -> void:
-	_interlude_text = "OUT OF SWINGS"
+func _on_crushed() -> void:
+	_interlude_text = "CRUSHED"
+	_shake = maxf(_shake, 1.6)
 
 
 func _on_level_finished(won: bool) -> void:
@@ -555,11 +728,9 @@ func _on_level_finished(won: bool) -> void:
 	_interlude_won = won
 
 
-## The only place the world can be started again. The first build of this game
-## recorded the best score here and did nothing else, so `over` stayed true,
-## `advance()` returned early forever, and the game sat frozen with a live HUD.
-## Every test in that suite read the state at the end of a level - which is the
-## exact instant the freeze began.
+## The only place the world can be started again. An earlier build of this game
+## recorded the score here and did nothing else, so `over` stayed true,
+## `advance()` returned early forever, and it sat frozen with a live HUD.
 func _advance_interlude(dt: float) -> void:
 	if _interlude <= 0.0:
 		return
@@ -571,75 +742,109 @@ func _advance_interlude(dt: float) -> void:
 	else:
 		sim.restart(1)
 	_chunks.clear()
+	_slabs.clear()
 
 
 ## Debris comes off a SEEDED stream, not randf().
 ##
 ## It is cosmetic and it still must not be random: the smoke test asserts the
 ## count drawn against the count that exists, and a chunk whose lifetime came
-## from randf() makes that assertion flake. The wider rule is that anything
-## deciding *when* something happens is simulation however decorative it looks.
-func _burst(x: float, z: float, y: float, n: int, force: float) -> void:
+## from randf() makes that assertion flake. Anything deciding *when* something
+## happens is simulation however decorative it looks.
+func _burst(at: Vector2, y: float, n: int, force: float) -> void:
 	for i in n:
 		if _chunks.size() >= DEBRIS_POOL:
 			return
-		var span := _fx_rng.range_f(0.7, 1.9)
+		var span := _fx_rng.range_f(0.8, 2.2)
 		_chunks.append({
-			"pos": Vector3(x + _fx_rng.range_f(-1.2, 1.2), y, wz(z) - _fx_rng.range_f(0.0, 2.0)),
+			"pos": to_world(at, y) + Vector3(
+				_fx_rng.range_f(-0.7, 0.7), 0.0, _fx_rng.range_f(-0.7, 0.7)),
 			"vel": Vector3(
-				_fx_rng.range_f(-4.0, 4.0) * force,
-				_fx_rng.range_f(1.0, 7.0) * force,
-				_fx_rng.range_f(1.0, 6.0) * force),
+				_fx_rng.range_f(-5.0, 5.0) * force,
+				_fx_rng.range_f(1.5, 7.0) * force,
+				_fx_rng.range_f(-5.0, 5.0) * force),
 			"ang": Vector3(_fx_rng.range_f(0.0, TAU), _fx_rng.range_f(0.0, TAU), 0.0),
-			"spin": _fx_rng.range_f(-7.0, 7.0),
-			"life": span,
-			"span": span,
-			"size": _fx_rng.range_f(0.35, 1.25),
+			"spin": _fx_rng.range_f(-8.0, 8.0),
+			"life": span, "span": span,
+			"size": _fx_rng.range_f(0.4, 1.5),
 		})
 
 
+## A section of ceiling comes down where a column used to be. Cosmetic: the
+## slab has no say in anything, which is exactly why it is allowed to be
+## spectacular.
+func _drop_slab_over(at: Vector2) -> void:
+	if _slabs.size() >= SLAB_POOL:
+		return
+	_slabs.append({
+		"pos": to_world(at, Tuning.CEILING),
+		"vel": Vector3(0, -0.4, 0),
+		"tilt": Vector3(_fx_rng.range_f(-0.25, 0.25), _fx_rng.range_f(0.0, TAU), _fx_rng.range_f(-0.25, 0.25)),
+		"spin": _fx_rng.range_f(-0.8, 0.8),
+		"life": 9.0, "span": 9.0,
+	})
+
+
 func _advance_fx(dt: float) -> void:
-	_shake = maxf(0.0, _shake - dt * 2.4)
+	_shake = maxf(0.0, _shake - dt * 2.2)
+
 	var keep: Array[Dictionary] = []
 	for c in _chunks:
 		c.life -= dt
 		if c.life <= 0.0:
 			continue
-		c.vel.y -= 22.0 * dt
+		c.vel.y -= 20.0 * dt
 		c.pos += c.vel * dt
-		if c.pos.y < 0.28:
-			c.pos.y = 0.28
-			c.vel.y = absf(c.vel.y) * 0.32
-			c.vel.x *= 0.7
-			c.vel.z *= 0.7
+		if c.pos.y < 0.25:
+			c.pos.y = 0.25
+			c.vel.y = absf(c.vel.y) * 0.3
+			c.vel.x *= 0.65
+			c.vel.z *= 0.65
 		c.ang.x += c.spin * dt
-		c.ang.y += c.spin * 0.6 * dt
+		c.ang.y += c.spin * 0.7 * dt
 		keep.append(c)
 	_chunks = keep
+
+	var slabs_keep: Array[Dictionary] = []
+	for sl in _slabs:
+		sl.life -= dt
+		if sl.life <= 0.0:
+			continue
+		sl.vel.y -= 9.0 * dt
+		sl.pos += sl.vel * dt
+		if sl.pos.y < 0.4:
+			sl.pos.y = 0.4
+			sl.vel = Vector3.ZERO
+		else:
+			sl.tilt.y += sl.spin * dt
+		slabs_keep.append(sl)
+	_slabs = slabs_keep
 
 
 # --- drawing --------------------------------------------------------------
 
 func _sync() -> void:
-	_rig.position = Vector3(sim.x, 0.0, 0.0)
-	_rig.rotation = Vector3(0.0, 0.0, -sim.vx * 0.03)
+	_rig.position = to_world(sim.pos, 0.0)
+	# The machine's heading is a rotation about the world's vertical. The sim's
+	# 0 is "into the room", which the world draws as -Z, so the two agree with
+	# no sign flip.
+	_rig.rotation = Vector3(0.0, sim.heading, 0.0)
 
-	var turret := Vector3(sim.x, 2.6, 0.0)
-	var tip := Vector3(sim.boom_tip_x(), Tuning.PIVOT_Y, wz(sim.boom_tip_z()))
-	var ball := Vector3(sim.ball_x(), sim.ball_y(), wz(sim.ball_z()))
-	_span(_boom, turret, tip)
+	var turret_dir := sim.heading + sim.turret
+	var tip := to_world(sim.boom_tip(), Tuning.BOOM_HEIGHT)
+	var base := to_world(sim.pos, 2.4) + Vector3(sin(turret_dir), 0, -cos(turret_dir)) * 0.6
+	var ball := to_world(sim.ball, sim.ball_y())
+	_span(_boom, base, tip)
 	_span(_chain, tip, ball)
 	_ball.position = ball
 
-	_counterweight.position = Vector3(
-		sim.x - 2.0 * sin(sim.yaw), 2.7, wz(-2.0 * cos(sim.yaw)))
-	_counterweight.rotation = Vector3(0.0, -sim.yaw, 0.0)
-
 	if _stick != null:
 		_stick.queue_redraw()
+	if _dial != null:
+		_dial.queue_redraw()
 
 	_write_camera()
-	_write_building()
+	_write_room()
 	_write_debris()
 	_write_hud()
 
@@ -662,81 +867,73 @@ func _span(node: MeshInstance3D, from: Vector3, to: Vector3) -> void:
 	node.scale = Vector3(1.0, 1.0, length)
 
 
+## A follow camera with a FIXED orientation.
+##
+## It chased the machine's heading for two builds and both were unusable. A
+## rotating camera in a low bounded room has nowhere to retreat to: drive at a
+## wall and the lens ends up behind it, and the shot becomes the inside of the
+## concrete. Clamping the position fixed the worst of it and left the camera
+## pressed against a wall staring at it.
+##
+## Holding the orientation still solves it outright, and it is the better shot
+## anyway. What the player is reading in this game is the ARC the ball sweeps
+## around the room - which columns it will pass through, and whether the orbit
+## is wide enough. An over-the-shoulder view hides exactly that; a fixed angle
+## looking down the room shows the whole floor plan and the ball's path across
+## it. The machine turns inside the frame instead of the frame turning with it.
 func _write_camera() -> void:
-	# Fixed on the site rather than chasing the crane. The subject is the
-	# building - the player is judging a shape, not travelling anywhere - so
-	# the frame holds still and the machine moves inside it. A camera that
-	# followed would take the reference away from the thing being judged.
-	# Back far enough to see the whole building at once, which is the thing
-	# being judged. The first framing put the lens 15 metres out and the
-	# building filled the frame edge to edge - you could see the bay you were
-	# hitting and nothing about the shape you were making, which is the only
-	# question the game asks.
-	var sway := sim.x * 0.18 + sim.ball_x() * 0.08
-	var eye := Vector3(sway, 14.5, 30.0)
+	var eye := to_world(sim.pos, 0.0) + Vector3(0, CAM_HEIGHT, CAM_BACK)
 	if _shake > 0.0:
 		# Cosmetic, and the one place randf() is legitimate: this moves the
 		# lens, not the game. Nothing reads it back.
-		eye += Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0), 0.0) * _shake * 0.4
-	_cam.transform = Transform3D(Basis(Vector3.RIGHT, -0.26), eye)
+		eye += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * _shake * 0.3
+
+	# Held inside the room. A camera that leaves is a camera looking at the
+	# back of a wall, and the ceiling clamp is the same problem upward - the
+	# first framing put the lens 6.4 metres up in a 4.6-metre room.
+	# Held over the deck rather than inside it. Above the beams there is room to
+	# move, so the clamp only stops the view sliding off the site entirely.
+	var hw := Tuning.DECK_W * 0.5 + 4.0
+	var hd := Tuning.DECK_D * 0.5 + 8.0
+	eye.x = clampf(eye.x, -hw, hw)
+	eye.z = clampf(eye.z, -hd, hd)
+
+	# Look at a point a little ahead of the machine, so the room it is driving
+	# into gets more of the frame than the room it has left.
+	var focus := to_world(sim.pos, 1.0) + Vector3(0, 0, -1.5)
+	_cam.transform = Transform3D(Basis.IDENTITY, eye).looking_at(focus, Vector3.UP)
 
 
-## The building, leaning.
-##
-## Every standing cell is rotated about the ground line at the centre of the
-## site by an angle taken straight from `sim.lean`, so the picture and the
-## gauge are the same number. A building that leaned by some separate
-## animation value would be a second source of truth for the one thing the
-## player is judging.
-func _write_building() -> void:
-	var tilt := sim.lean * 0.16
-	var ca := cos(tilt)
-	var sa := sin(tilt)
-	var basis := Basis(Vector3.BACK, tilt)
-
+func _write_room() -> void:
 	var n := 0
-	var mm := _floors.multimesh
-	var cn := 0
-	var cmm := _columns.multimesh
-
-	for i in sim.bays.size():
-		var b := sim.bays[i]
-		if not b.standing:
+	var mm := _columns.multimesh
+	for c in sim.columns:
+		if not c.standing or n >= COLUMN_POOL:
 			continue
-		var bx := Tuning.bay_x(sim.level, i)
-
-		if cn < COLUMN_POOL:
-			var cy := Tuning.FLOOR_HEIGHT * 0.62
-			cmm.set_instance_transform(cn, Transform3D(basis, Vector3(
-				bx * ca - cy * sa, bx * sa + cy * ca,
-				wz(Tuning.FACE_Z - 0.5))))
-			# Red hot when it is one hit from going, so the player can see what
-			# their next swing will cost them before they take it.
-			var hp: int = b.hp
-			# One colour family for "this is what you hit", the way a hazard
-			# gets one on a runner - and it brightens as the column weakens,
-			# so what your next swing will cost is visible before you take it.
-			cmm.set_instance_color(cn, Color(1.00, 0.42, 0.14) if hp <= 1
-				else Color(0.86, 0.62, 0.16))
-			cn += 1
-
-		for f in int(b.floors):
-			if n >= FLOOR_POOL:
-				break
-			# Floor 0 is the storey the column holds up, so it starts above it.
-			var y := Tuning.FLOOR_HEIGHT * (float(f) + 1.7)
-			mm.set_instance_transform(n, Transform3D(basis, Vector3(
-				bx * ca - y * sa, bx * sa + y * ca,
-				wz(Tuning.FACE_Z + Tuning.BUILDING_DEPTH * 0.5))))
-			# Per-instance colour keyed on the place, so a given building looks
-			# the same every time it is played.
-			var tint := SimUtil.hash2(i * 7 + f, 31 + sim.level)
-			var shade := 0.30 + tint * 0.22
-			mm.set_instance_color(n, Color(shade * 1.06, shade * 0.98, shade * 0.9))
-			n += 1
-
+		mm.set_instance_transform(n, Transform3D(Basis.IDENTITY,
+			to_world(c.at, Tuning.CEILING * 0.5)))
+		# Damage shows on the column itself: a battered one goes darker and
+		# warmer, so the player can read what they have already worked without
+		# a health bar floating over it.
+		var wear: float = clampf(float(c.hp) / maxf(float(c.max_hp), 0.001), 0.0, 1.0)
+		mm.set_instance_color(n, Color(0.46, 0.45, 0.44).lerp(Color(0.34, 0.22, 0.16), 1.0 - wear))
+		n += 1
 	mm.visible_instance_count = n
-	cmm.visible_instance_count = cn
+
+	var wn := 0
+	var wmm := _walls.multimesh
+	for w in sim.walls:
+		if not w.standing or wn >= WALL_POOL:
+			continue
+		var span: Vector2 = w.b - w.a
+		var basis := Basis(Vector3.UP, atan2(span.x, -span.y)).scaled(
+			Vector3(span.length(), 1.0, 1.0))
+		wmm.set_instance_transform(wn, Transform3D(basis,
+			to_world(w.at, Tuning.CEILING * 0.43)))
+		var wear: float = clampf(float(w.hp) / maxf(float(w.max_hp), 0.001), 0.0, 1.0)
+		wmm.set_instance_color(wn, Color(0.40, 0.39, 0.38).lerp(Color(0.30, 0.21, 0.17), 1.0 - wear))
+		wn += 1
+	wmm.visible_instance_count = wn
 
 
 func _write_debris() -> void:
@@ -750,49 +947,55 @@ func _write_debris() -> void:
 		# `:=` cannot infer a type from one.
 		var ang: Vector3 = c.ang
 		var pos: Vector3 = c.pos
-		var grow: float = float(c.size) * (0.4 + fade * 0.6)
+		var grow: float = float(c.size) * (0.35 + fade * 0.65)
 		mm.set_instance_transform(n, Transform3D(
 			Basis.from_euler(ang).scaled(Vector3.ONE * grow), pos))
-		mm.set_instance_color(n, Color(0.52, 0.50, 0.47, fade))
+		mm.set_instance_color(n, Color(0.48, 0.46, 0.43, fade))
 		n += 1
 	mm.visible_instance_count = n
+
+	var sn := 0
+	var smm := _slab.multimesh
+	for sl in _slabs:
+		if sn >= SLAB_POOL:
+			break
+		var tilt: Vector3 = sl.tilt
+		var spos: Vector3 = sl.pos
+		smm.set_instance_transform(sn, Transform3D(Basis.from_euler(tilt), spos))
+		smm.set_instance_color(sn, Color(0.34, 0.33, 0.32))
+		sn += 1
+	smm.visible_instance_count = sn
 
 
 func _write_hud() -> void:
 	_readout.text = SimUtil.fmt(sim.rubble)
 
-	# The gauge grows from the centre in whichever direction the building is
-	# going, and changes colour at the same threshold the bonus is judged on -
-	# so "you have lost the clean drop" is visible at the moment it happens
-	# rather than on the results screen.
-	var span: float = clampf(sim.lean / Tuning.TOPPLE_LIMIT, -1.0, 1.0)
-	var half := 296.0
-	_lean_fill.position = Vector2(300.0 + (0.0 if span > 0.0 else span * half), 3)
-	_lean_fill.size = Vector2(absf(span) * half, 20)
-	var danger: float = absf(sim.lean)
-	if danger >= Tuning.LEAN_WARN:
-		_lean_fill.color = Color(0.92, 0.32, 0.18)
-	elif danger >= Tuning.LEAN_WARN * 0.6:
-		_lean_fill.color = Color(0.95, 0.72, 0.22)
+	var frac: float = clampf(sim.integrity, 0.0, 1.0)
+	_gauge_fill.size = Vector2(574.0 * frac, 20)
+	if sim.collapsing:
+		_gauge_fill.color = Color(0.95, 0.25, 0.15)
+	elif sim.integrity <= Tuning.COLLAPSE_AT + 0.12:
+		_gauge_fill.color = Color(0.95, 0.70, 0.20)
 	else:
-		_lean_fill.color = Color(0.45, 0.85, 0.45)
+		_gauge_fill.color = Color(0.45, 0.85, 0.45)
 
-	if _interlude > 0.0:
+	if _interlude > 0.0 and _interlude_text != "":
 		_banner.text = _interlude_text
+		_banner.visible = true
+	elif sim.collapsing:
+		_banner.text = "GET OUT  %.1f" % maxf(0.0, sim.escape_left)
 		_banner.visible = true
 	else:
 		_banner.visible = false
 
-	_hud.text = "SITE %d    SWINGS %d    %d/%d BAYS\nBEST %s at site %d\n%s" % [
-		sim.level, sim.swings_left, sim.bays_standing(), sim.bays.size(),
+	_hud.text = "LEVEL %d    SUPPORT %d%%    %d COLUMNS LEFT\nBEST %s at level %d\n%s" % [
+		sim.level, int(round(sim.integrity * 100.0)), sim.columns_standing(),
 		SimUtil.fmt(best_rubble), best_site, BuildStamp.line(),
 	]
 
 
 # --- save -----------------------------------------------------------------
 
-## Small on purpose. There is no yard yet, so the only thing worth keeping
-## between runs is the record - which is also the only reason to start another.
 func _load_save() -> void:
 	if not FileAccess.file_exists(SAVE_PATH):
 		return
@@ -812,36 +1015,3 @@ func _save() -> void:
 		return
 	f.store_string(JSON.stringify({"best_rubble": best_rubble, "best_site": best_site}))
 	f.close()
-
-
-# --- input ----------------------------------------------------------------
-
-## Two controls, split by where a touch begins.
-##
-## The dial takes its own presses through `_gui_input` and calls
-## `accept_event()`, so anything reaching here started somewhere else - and
-## anything that starts somewhere else is a swipe that moves the crane. That
-## includes the area below the dial, where Gideon asked for it, and everywhere
-## else besides, because a control with an invisible boundary gets fumbled.
-func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch or event is InputEventMouseButton:
-		if event.pressed:
-			_swipe_id = event.index if event is InputEventScreenTouch else 0
-			_swipe_from = event.position.x
-			_swipe_used = false
-		else:
-			_swipe_id = -1
-		return
-
-	if event is InputEventScreenDrag or (event is InputEventMouseMotion and _swipe_id >= 0):
-		if _swipe_id < 0 or _swipe_used:
-			return
-		var travelled: float = event.position.x - _swipe_from
-		var threshold := float(get_viewport().get_visible_rect().size.x) * SWIPE_FRACTION
-		if absf(travelled) < threshold:
-			return
-		_swipe_used = true
-		# No sign flip: swiping right moves the crane right, because the site
-		# is drawn along -Z and the camera is therefore never turned around.
-		sim.nudge(1 if travelled > 0.0 else -1)
-		_shake = maxf(_shake, 0.1)
