@@ -32,11 +32,14 @@ extends RefCounted
 ## moved off the boom, and `hits` is ZERO - which is the field to watch. It read
 ## five hundred on an earlier build because the machine spawned with its ball
 ## inside a column, and nothing else in the suite would have said so.
+## Touches nothing for a minute. `hits` is ZERO - the field to watch, because
+## it read five hundred on an earlier build where the machine spawned with its
+## ball inside a column, and nothing else in the suite would have said so.
 const PASSIVE := {
 	"level": 2, "rubble": 0, "columns_down": 0, "walls_down": 0,
 	"integrity": 1.0, "collapsing": false, "escape_left": 0.0,
 	"x": 0.0, "z": -14.3, "heading": 0.0, "speed": 0.0, "turret": 0.0,
-	"ball_x": 0.0, "ball_z": -9.7, "ball_speed": 0.0,
+	"ball_x": 0.0, "ball_z": -10.7, "ball_speed": 0.0,
 	"over": false, "won": false, "peak_ball": 0.0, "hits": 0, "seconds": 60.0,
 }
 ## Creeps at the columns at a quarter throttle for the whole minute. Eleven
@@ -45,22 +48,32 @@ const PASSIVE := {
 ##
 ## This is the policy that proves the machine is not a bulldozer. It uses the
 ## same targeting as the two below and differs only in throttle.
+## Creeps at the columns at a quarter throttle for a full minute and lands
+## ZERO hits. Not "a few weak ones" - none: the ball never gets above 8.3 m/s,
+## and at that speed a pass does not even reach a column with enough left to
+## register a contact.
+##
+## This is the policy that proves the machine is not a bulldozer. It uses the
+## same targeting as the two below and differs only in throttle.
 const NUDGER := {
-	"level": 2, "rubble": 120, "columns_down": 1, "walls_down": 0,
-	"integrity": 0.909, "collapsing": false, "escape_left": 0.0,
-	"x": -5.382, "z": -10.868, "heading": -1.132, "speed": 1.976, "turret": 0.0,
-	"ball_x": -9.076, "ball_z": -14.092, "ball_speed": 7.166,
-	"over": false, "won": false, "peak_ball": 7.859, "hits": 11, "seconds": 60.0,
+	"level": 2, "rubble": 0, "columns_down": 0, "walls_down": 0,
+	"integrity": 1.0, "collapsing": false, "escape_left": 0.0,
+	"x": -2.088, "z": -7.946, "heading": 2.847, "speed": 1.985, "turret": 0.0,
+	"ball_x": -0.617, "ball_z": -11.709, "ball_speed": 4.083,
+	"over": false, "won": false, "peak_ball": 8.313, "hits": 0, "seconds": 60.0,
 }
 ## Wrecks properly and never leaves. Four columns down, the slab lets go at 33
 ## seconds - and it is still in the room at 44.65 with `escape_left` past zero.
 ## 515 rubble and a loss.
+## Wrecks properly and never leaves. Five columns down, the slab lets go, and
+## it is still in the room at 32.17 seconds with `escape_left` past zero. 670
+## rubble and a loss.
 const GREEDY := {
-	"level": 2, "rubble": 515, "columns_down": 4, "walls_down": 1,
-	"integrity": 0.658, "collapsing": true, "escape_left": -0.013,
-	"x": -3.436, "z": -5.092, "heading": 2.535, "speed": 7.578, "turret": 0.0,
-	"ball_x": 1.868, "ball_z": -4.417, "ball_speed": 15.454,
-	"over": true, "won": false, "peak_ball": 17.516, "hits": 7, "seconds": 44.65,
+	"level": 2, "rubble": 670, "columns_down": 5, "walls_down": 2,
+	"integrity": 0.563, "collapsing": true, "escape_left": -0.013,
+	"x": 1.935, "z": 5.323, "heading": 2.352, "speed": 8.037, "turret": 0.0,
+	"ball_x": 2.449, "ball_z": 4.199, "ball_speed": 16.495,
+	"over": true, "won": false, "peak_ball": 24.352, "hits": 16, "seconds": 32.167,
 }
 ## The same run, one boolean apart: this one heads for the ramp when the slab
 ## goes. Out at 33.5 seconds with 11.1 to spare, and the time left pays - 959
@@ -70,12 +83,19 @@ const GREEDY := {
 ## driving, identical damage on the ground; nearly twice the money and the
 ## difference between a win and being crushed, for knowing when to leave. If
 ## these two ever converge, the escape has stopped being a decision.
+## The same run, one boolean apart: this one heads for the ramp when the slab
+## goes. Out at 21.8 seconds with 10.3 to spare, and the time left pays - 962
+## against 670, on one FEWER column.
+##
+## GREEDY and WRECKER are the pair that matters. Identical code, identical
+## driving; the one that knows when to stop earns half again as much and lives.
+## If these two ever converge, the escape has stopped being a decision.
 const WRECKER := {
-	"level": 2, "rubble": 959, "columns_down": 4, "walls_down": 1,
-	"integrity": 0.658, "collapsing": true, "escape_left": 11.103,
-	"x": -0.132, "z": -16.54, "heading": 2.986, "speed": 9.359, "turret": 0.0,
-	"ball_x": -2.852, "ball_z": -17.18, "ball_speed": 11.852,
-	"over": true, "won": true, "peak_ball": 17.516, "hits": 7, "seconds": 33.533,
+	"level": 2, "rubble": 962, "columns_down": 4, "walls_down": 2,
+	"integrity": 0.641, "collapsing": true, "escape_left": 10.32,
+	"x": 0.875, "z": -16.573, "heading": -2.778, "speed": 9.4, "turret": 0.0,
+	"ball_x": 2.584, "ball_z": -22.126, "ball_speed": 11.514,
+	"over": true, "won": true, "peak_ball": 24.352, "hits": 13, "seconds": 21.833,
 }
 
 
@@ -125,8 +145,13 @@ func test_speed_is_what_does_the_damage(t: TestHarness) -> void:
 	for level in [1, 2, 3, 4]:
 		creeping += int(Policies.play(Policies.NUDGER, level)["rubble"])
 		driving += int(Policies.play(Policies.WRECKER, level)["rubble"])
-	t.gt(float(driving), float(creeping) * 1.5,
+	t.gt(float(driving), float(creeping) * 4.0,
 		"creeping at the columns earns nearly as much as driving at them - speed does not matter")
+	# Stronger, and it is worth stating as its own claim: with the chain
+	# carrying momentum properly, a machine that creeps does not merely score
+	# less - it cannot bring a single column down in a minute.
+	t.eq(Policies.play(Policies.NUDGER, 2)["columns_down"], 0,
+		"creeping at a column is enough to fell it, so driving fast is optional")
 
 
 func test_getting_out_is_worth_more_than_staying(t: TestHarness) -> void:

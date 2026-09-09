@@ -12,9 +12,22 @@ extends RefCounted
 ## refactored; one line each; newest first. Add this from day one. On an
 ## earlier game it arrived far too late to be as useful as it should have been.
 
-const VERSION := "0.4.0"
+const VERSION := "0.4.1"
 
 const RELEASES := [
+	{
+		"version": "0.4.1",
+		"date": "2026-09-09",
+		"title": "The controls, fixed",
+		"notes": [
+			"Fixed: driving felt backward, because it was - half the time. Push the stick where you want to go and the machine goes there, whichever way it is facing.",
+			"The boom control is a slider now instead of a dial. It only turns, so it only needed one dimension.",
+			"The chain carries its momentum properly. A swing keeps going instead of dying the moment it goes taut.",
+			"The ball hangs on a real pendulum, so it swings back instead of staying wherever it was last flung.",
+			"Shorter chain, so the ball is not permanently at full stretch.",
+			"Columns are tougher to match - a basement now takes 20 to 50 seconds instead of 8.",
+		],
+	},
 	{
 		"version": "0.4.0",
 		"date": "2026-09-08",

@@ -36,7 +36,7 @@ var _dust: GPUParticles3D
 
 var _ui: Control
 var _stick: Control
-var _dial: Control
+var _slew: Control
 var _readout: Label
 var _hud: Label
 var _banner: Label
@@ -45,7 +45,7 @@ var _gauge_fill: ColorRect
 
 var _stick_grab := -1
 var _stick_vec := Vector2.ZERO
-var _dial_grab := -1
+var _slew_grab := -1
 
 var _shake := 0.0
 var _hitstop := 0.0
@@ -455,9 +455,23 @@ func _make_multimesh(mesh: Mesh, pool: int, colours: bool) -> MultiMeshInstance3
 const CAM_BACK := 11.0
 const CAM_HEIGHT := 23.0
 
-const PAD := 200.0
-const PAD_MARGIN := 70.0
-const PAD_BOTTOM := 210.0
+const PAD := 210.0
+const PAD_MARGIN := 60.0
+const PAD_BOTTOM := 200.0
+
+## The boom control is a horizontal SLIDER, not a dial.
+##
+## It was a dial for two builds, and Gideon's note retired it: "the controls
+## don't need to be a dial look. since we are only controlling the turning, it
+## could just be a left and right joystick or slider." He is right, and the
+## reason is that a dial offers two dimensions to a control that has one - so
+## the thumb has to be placed precisely on a circle to say a thing a line could
+## have said, and the vertical half of every drag is thrown away.
+##
+## Wide, because width IS precision here: the whole slew range is mapped across
+## it, so more pixels per radian is a steadier boom.
+const SLEW_W := 470.0
+const SLEW_H := 150.0
 
 
 func _build_hud() -> void:
@@ -521,13 +535,25 @@ func _build_hud() -> void:
 	_banner.visible = false
 	_ui.add_child(_banner)
 
-	# Left thumb drives, right thumb swings. Two sticks, because there are two
+	# Left thumb drives, right thumb slews. Two controls, because there are two
 	# things to do at once and one of them - keeping the ball moving - never
 	# stops mattering.
 	_stick = _make_pad("Stick", true)
-	_dial = _make_pad("Dial", false)
 	_ui.add_child(_stick)
-	_ui.add_child(_dial)
+
+	_slew = Control.new()
+	_slew.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_slew.custom_minimum_size = Vector2(SLEW_W, SLEW_H)
+	_slew.size = Vector2(SLEW_W, SLEW_H)
+	_slew.offset_left = -PAD_MARGIN - SLEW_W
+	_slew.offset_right = -PAD_MARGIN
+	_slew.offset_top = -PAD_BOTTOM - SLEW_H * 0.5 - PAD * 0.25
+	_slew.offset_bottom = -PAD_BOTTOM + SLEW_H * 0.5 - PAD * 0.25
+	_slew.mouse_filter = Control.MOUSE_FILTER_STOP
+	_slew.name = "Slew"
+	_slew.gui_input.connect(_on_slew_input)
+	_slew.draw.connect(_draw_slew)
+	_ui.add_child(_slew)
 
 
 func _make_pad(name: String, left: bool) -> Control:
@@ -545,12 +571,8 @@ func _make_pad(name: String, left: bool) -> Control:
 	c.offset_bottom = -PAD_BOTTOM
 	c.mouse_filter = Control.MOUSE_FILTER_STOP
 	c.name = name
-	if left:
-		c.gui_input.connect(_on_stick_input)
-		c.draw.connect(_draw_stick)
-	else:
-		c.gui_input.connect(_on_dial_input)
-		c.draw.connect(_draw_dial)
+	c.gui_input.connect(_on_stick_input)
+	c.draw.connect(_draw_stick)
 	return c
 
 
@@ -566,28 +588,58 @@ func _draw_stick() -> void:
 	_stick.draw_circle(c + _stick_vec * (r * 0.55), r * 0.28, Color(0.95, 0.85, 0.55, 0.85))
 
 
-## The crane dial, drawn as the machine seen from above with the boom pointing
-## where it actually points - so the control shows STATE, not just input, and
-## the player can read their aim without looking away from the room.
-func _draw_dial() -> void:
-	var r := PAD * 0.5
-	var c := Vector2(r, r)
-	var lit: float = 0.6 if _dial_grab >= 0 else 0.3
-	_dial.draw_circle(c, r, Color(0.05, 0.05, 0.06, 0.32))
-	_dial.draw_arc(c, r - 4.0, 0.0, TAU, 48, Color(1.0, 0.86, 0.42, lit), 4.0)
+## The slew slider. A track, a centre mark, and a knob that sits where the boom
+## actually points - so the control shows STATE and not just input, and a
+## glance at it says where the boom is without looking away from the room.
+##
+## The ball is drawn on it too, as a small mark at its own bearing. The gap
+## between the knob and that mark is the lag, which is the whole feel of the
+## game, and this is the one place it can be read without tracking two things
+## in the 3D view at once.
+func _draw_slew() -> void:
+	var mid := SLEW_H * 0.5
+	var track := Rect2(14, mid - 9, SLEW_W - 28, 18)
+	_slew.draw_rect(track, Color(0.05, 0.05, 0.06, 0.42), true)
+	var lit: float = 0.65 if _slew_grab >= 0 else 0.32
+	_slew.draw_rect(track, Color(1.0, 0.86, 0.42, lit), false, 3.0)
 
-	var dir := Vector2(sin(sim.turret), -cos(sim.turret))
-	var body := PackedVector2Array([
-		c + Vector2(-16, -20), c + Vector2(16, -20), c + Vector2(16, 20), c + Vector2(-16, 20)])
-	_dial.draw_colored_polygon(body, Color(0.22, 0.21, 0.20, 0.9))
-	_dial.draw_line(c - dir * 18.0, c + dir * (r * 0.78), Color(0.86, 0.68, 0.20, 0.95), 9.0)
-	_dial.draw_circle(c, 12.0, Color(0.42, 0.40, 0.36, 0.95))
+	# Straight ahead, marked, so the player can find centre without hunting.
+	_slew.draw_line(Vector2(SLEW_W * 0.5, mid - 22), Vector2(SLEW_W * 0.5, mid + 22),
+		Color(1, 1, 1, 0.45), 3.0)
 
-	# The ball, in the machine's own frame - so the gap between the boom and the
-	# ball, which is the whole feel of the game, is readable on the control.
+	var span := (SLEW_W - 28.0) * 0.5
+	var knob := Vector2(SLEW_W * 0.5 + (sim.turret / Tuning.TURRET_MAX) * span, mid)
+	_slew.draw_circle(knob, 30.0, Color(0.86, 0.68, 0.20, 0.9))
+	_slew.draw_circle(knob, 22.0, Color(0.16, 0.15, 0.14, 0.9))
+
+	# And the ball, at the bearing it is really at, in the machine's own frame.
 	var rel := (sim.ball - sim.pos).rotated(sim.heading)
-	var scaled := rel / (Tuning.BOOM_LEN + Tuning.CHAIN) * (r * 0.82)
-	_dial.draw_circle(c + Vector2(scaled.x, -scaled.y), 11.0, Color(0.92, 0.86, 0.72, 0.95))
+	var bearing: float = atan2(rel.x, rel.y)
+	var at := Vector2(SLEW_W * 0.5 + clampf(bearing / Tuning.TURRET_MAX, -1.0, 1.0) * span, mid)
+	_slew.draw_circle(at, 11.0, Color(0.92, 0.86, 0.72, 0.95))
+
+
+func _on_slew_input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch or event is InputEventMouseButton:
+		if event.pressed:
+			_slew_grab = event.index if event is InputEventScreenTouch else 0
+			_read_slew(event.position)
+		else:
+			_slew_grab = -1
+		_slew.accept_event()
+	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
+		if _slew_grab >= 0:
+			_read_slew(event.position)
+			_slew.accept_event()
+
+
+## Absolute: where the thumb is along the track IS where the boom is asked to
+## point. On a one-dimensional control that is unambiguous, and it means the
+## boom can be put back to centre by putting the thumb on the centre mark.
+func _read_slew(local: Vector2) -> void:
+	var span := (SLEW_W - 28.0) * 0.5
+	var t: float = clampf((local.x - SLEW_W * 0.5) / span, -1.0, 1.0)
+	sim.aim_to(t * Tuning.TURRET_MAX)
 
 
 func _on_stick_input(event: InputEvent) -> void:
@@ -598,7 +650,7 @@ func _on_stick_input(event: InputEvent) -> void:
 		else:
 			_stick_grab = -1
 			_stick_vec = Vector2.ZERO
-			sim.drive(0.0, 0.0)
+			sim.drive_dir(Vector2.ZERO, 0.0)
 		_stick.accept_event()
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _stick_grab >= 0:
@@ -606,38 +658,28 @@ func _on_stick_input(event: InputEvent) -> void:
 			_stick.accept_event()
 
 
+## The stick says WHERE ON SCREEN to go, not what to do with the tracks.
+##
+## It set a throttle and a steer for one build, and Gideon's report was that
+## "the driving controls almost feel backward". They were, half the time: the
+## camera holds a fixed orientation, so whenever the machine happened to be
+## facing back toward it, forward on the stick drove the machine DOWN the
+## screen and right on the stick turned it left. Vehicle-relative controls
+## under a fixed camera are tank controls.
+##
+## Push the stick where you want the machine to go. The screen's up is the
+## room's far end, so the stick's direction maps straight onto the world with
+## no dependence on which way the machine happens to be pointing.
 func _read_stick(local: Vector2) -> void:
 	var r := PAD * 0.5
 	_stick_vec = ((local - Vector2(r, r)) / (r * 0.78)).limit_length(1.0)
-	# Up is forward, and the stick's y grows downward - so the throttle is the
-	# negated component. Steering is the horizontal one, and both are relative
-	# to the MACHINE, which is why a chase camera that turns cannot invert them.
-	sim.drive(-_stick_vec.y, _stick_vec.x)
-
-
-func _on_dial_input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch or event is InputEventMouseButton:
-		if event.pressed:
-			_dial_grab = event.index if event is InputEventScreenTouch else 0
-			_read_dial(event.position)
-		else:
-			_dial_grab = -1
-		_dial.accept_event()
-	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
-		if _dial_grab >= 0:
-			_read_dial(event.position)
-			_dial.accept_event()
-
-
-func _read_dial(local: Vector2) -> void:
-	var r := PAD * 0.5
-	var off := local - Vector2(r, r)
-	if off.length() < r * 0.2:
+	var power := _stick_vec.length()
+	if power < Tuning.STICK_DEADZONE:
+		sim.drive_dir(Vector2.ZERO, 0.0)
 		return
-	# The angle the thumb is at IS the boom's angle. Absolute rather than
-	# relative, because on a dial the thumb's position is the value - and a
-	# relative mapping would let the thumb and the drawn boom drift apart.
-	sim.aim_to(atan2(off.x, -off.y))
+	# Screen up is -y on the stick and +y in the simulation, which is into the
+	# room. One negation, in one place, next to the sentence explaining it.
+	sim.drive_dir(Vector2(_stick_vec.x, -_stick_vec.y), power)
 
 
 # --- loop -----------------------------------------------------------------
@@ -840,8 +882,8 @@ func _sync() -> void:
 
 	if _stick != null:
 		_stick.queue_redraw()
-	if _dial != null:
-		_dial.queue_redraw()
+	if _slew != null:
+		_slew.queue_redraw()
 
 	_write_camera()
 	_write_room()

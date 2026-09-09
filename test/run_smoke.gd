@@ -95,7 +95,7 @@ func _check_the_room_is_drawn(main) -> void:
 ## no screenshot taken here could catch it. The property CAN be checked.
 func _check_the_controls_are_anchored(main) -> void:
 	_t.begin("smoke > the controls are anchored, not placed")
-	for pad in [main._stick, main._dial]:
+	for pad in [main._stick, main._slew]:
 		_t.eq(pad.anchor_bottom, 1.0,
 			"%s is not anchored to the bottom - it will drift on a tall screen" % pad.name)
 		_t.eq(pad.anchor_top, 1.0,
@@ -106,8 +106,13 @@ func _check_the_controls_are_anchored(main) -> void:
 		_t.eq(pad.mouse_filter, Control.MOUSE_FILTER_STOP,
 			"%s does not consume its own touches" % pad.name)
 	# And they must not overlap, or a thumb on one drives the other.
-	_t.lt(main._stick.anchor_left, main._dial.anchor_left + 0.001,
-		"the drive stick is not on the left of the crane dial")
+	_t.lt(main._stick.anchor_left, main._slew.anchor_left + 0.001,
+		"the drive stick is not on the left of the slew slider")
+	# The slew control is a SLIDER: wider than it is tall, because it controls
+	# one dimension and the width is what makes it precise. It was a dial for
+	# two builds - a two-dimensional control for a one-dimensional quantity.
+	_t.gt(main._slew.size.x, main._slew.size.y,
+		"the slew control is not wider than it is tall - it has gone back to being a dial")
 
 
 ## The camera has to be BEHIND the machine and looking at it. A chase camera
@@ -133,7 +138,7 @@ func _check_the_camera_is_behind_the_machine(main) -> void:
 	var eye := cam.transform.origin
 	var start: float = eye.distance_to(rig.position)
 	for i in 60:
-		main.sim.drive(1.0, 0.0)
+		main.sim.drive_dir(Vector2(0.0, 1.0), 1.0)
 		main.advance(1.0 / 60.0, 1.0 / 60.0)
 	_t.gt(eye.distance_to(main._rig.position), start,
 		"driving forward moved the machine toward where the camera was - the axes are mirrored")

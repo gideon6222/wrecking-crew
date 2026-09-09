@@ -116,24 +116,40 @@ func test_the_chain_never_stretches(t: TestHarness) -> void:
 
 
 func test_the_chain_does_not_invent_energy(t: TestHarness) -> void:
-	# THE test for this game's physics, and it exists because the constraint
-	# did exactly that. Solving a distance constraint by moving the ball and
-	# leaving its velocity alone injects energy on every taut frame, and it
-	# compounds: measured peak ball speed was 216 m/s on a machine that cannot
-	# exceed 9.5. The symptom was not an error - it was a policy that crawled
-	# at a fifth throttle outscoring one that drove flat out.
+	# THE test for this game's physics, and it exists because the constraint did
+	# exactly that. Solving a distance constraint by moving the ball and leaving
+	# its velocity alone injects energy on every taut frame and it compounds:
+	# measured peak ball speed was 216 m/s on a machine that cannot exceed 9.5.
+	# The symptom was not an error - it was a policy that crawled at a fifth
+	# throttle outscoring one that drove flat out.
 	#
-	# The ball is now given the velocity it actually travelled at, so it cannot
-	# be moving faster than it moved. The bound is generous, because a genuine
-	# whip is fast; what it catches is the runaway.
+	# What this asserts is SATURATION, not a ceiling. An earlier version of this
+	# test computed a hand-derived bound from the machine's top speed and its
+	# rotation rates, and failed - correctly, but for the wrong reason: driving
+	# a pendulum near its own period PUMPS it, so the speed legitimately climbs
+	# well past anything the machine can produce in one push. That is resonance,
+	# not a bug, and the honest distinction is whether it converges.
+	#
+	# So: drive adversarially for a full minute and compare the worst of the
+	# second half against the worst of the first. Real damping settles to a
+	# steady state; an energy leak grows without bound.
 	var s := Sim.new()
-	var ceiling := (Tuning.BOOM_LEN + Tuning.CHAIN) * (Tuning.TURN_RATE + Tuning.TURRET_SLEW) + Tuning.DRIVE_MAX
-	for i in int(round(30.0 / STEP)):
+	var early := 0.0
+	var late := 0.0
+	var half := int(round(30.0 / STEP))
+	for i in half * 2:
 		s.drive(1.0, sin(s.time * 2.3))
 		s.aim_to(sin(s.time * 1.1) * Tuning.TURRET_MAX)
 		s.advance(STEP)
-		t.lt(s.ball_speed(), ceiling,
-			"the ball is moving faster than the machine could possibly have swung it")
+		if i < half:
+			early = maxf(early, s.ball_speed())
+		else:
+			late = maxf(late, s.ball_speed())
+		t.lt(s.ball_speed(), Tuning.BALL_MAX_SPEED - 0.001,
+			"the emergency clamp is firing during ordinary driving, so it cannot signal a runaway")
+	t.gt(early, 1.0, "the adversarial drive never got the ball moving at all")
+	t.lt(late, early * 1.15,
+		"the swing is still gaining energy after a minute - the constraint is leaking")
 
 
 func test_driving_is_what_moves_the_ball(t: TestHarness) -> void:

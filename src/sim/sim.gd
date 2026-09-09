@@ -217,8 +217,38 @@ func advance(dt: float) -> void:
 	_settle(dt)
 
 
-## Both controls, set by the shell. Deliberately one seam each, so a scripted
-## policy and a thumb are indistinguishable to everything downstream.
+## Drive toward a direction in the WORLD, at a given power.
+##
+## This is the seam the thumb uses, and it replaced a throttle-and-steer pair
+## for a reason Gideon found immediately: "the driving controls almost feel
+## backward".
+##
+## They were, half the time. The camera holds a fixed orientation, so when the
+## machine happened to be facing back toward it, pushing the stick forward drove
+## the machine DOWN the screen and steering right turned it left on screen.
+## Vehicle-relative controls under a fixed camera are tank controls, and tank
+## controls are a thing players tolerate rather than enjoy.
+##
+## Push the stick where you want to go and the machine goes there. The heading
+## is then something the machine works out, not something the player has to
+## track - and because the direction is in world space, it means the same thing
+## whichever way the machine is pointing.
+func drive_dir(dir: Vector2, power: float) -> void:
+	if dir.length() < 0.001 or power <= 0.0:
+		drive(0.0, 0.0)
+		return
+	var want := atan2(dir.x, dir.y)
+	var err := wrapf(want - heading, -PI, PI)
+	# Turn toward it, and ease off the throttle while the turn is hard - which
+	# is how anyone drives, and matters mechanically because the turn rate
+	# falls away with speed.
+	var turn := clampf(err * 2.6, -1.0, 1.0)
+	var ease: float = 1.0 - 0.55 * clampf(absf(err) / PI, 0.0, 1.0)
+	drive(power * ease, turn)
+
+
+## The low-level seam, still here because the tests and the collision model are
+## written against it and because "how hard is it turning" is a real quantity.
 func drive(new_throttle: float, new_steer: float) -> void:
 	throttle = clampf(new_throttle, -1.0, 1.0)
 	steer = clampf(new_steer, -1.0, 1.0)
@@ -378,61 +408,71 @@ func _slew(dt: float) -> void:
 ## keeps trying to leave and the constraint fights it every frame, which reads
 ## as jitter. Returning a fraction of it instead of all is what makes a hard
 ## turn crack the ball out sideways rather than merely dragging it.
+## The chain, and the whole feel of the game.
+##
+## The ball is a free point mass. Nothing aims it, nothing pulls it toward a
+## target, and the only way to move it is to move the thing it hangs from - so
+## driving IS the wind-up.
+##
+## Two forces and one constraint:
+##
+##   restoring   a real pendulum, proportional to how far the ball has swung
+##   drag        low, so a swing carries
+##   the chain   inextensible, and it removes only the RADIAL velocity
+##
+## That last point is what took two attempts. An earlier version derived the
+## ball's velocity from how far it actually moved, which stopped the constraint
+## injecting energy but destroyed momentum with it: a taut chain clamps the
+## ball to a circle, so its per-frame displacement is small, so the derived
+## velocity was small, and every swing died the moment it went taut. Gideon's
+## words for the result were that the ball "flies out too much but also feels
+## like it doesn't have enough momentum", which is exactly those two faults
+## sitting on top of each other.
+##
+## The correct constraint zeroes the ball's radial velocity RELATIVE TO THE
+## TIP and leaves the tangential component completely alone. Tangential is the
+## momentum, so it carries; radial is the stretch, so it cannot. It cannot add
+## energy either, because it only ever removes a component - which is what
+## makes it stable without the displacement trick.
 func _swing(dt: float) -> void:
 	var tip := boom_tip()
 	var tip_vel := (tip - _prev_tip) / maxf(dt, 0.00001)
 	_prev_tip = tip
 
-	# A weak pull back under the tip, so a ball left alone eventually hangs
-	# still instead of orbiting forever.
-	var toward := tip - ball
-	if toward.length() > 0.001:
-		ball_vel += toward.normalized() * Tuning.BALL_SETTLE * dt
+	# The restoring force. Proportional to the swing, so the ball has a period
+	# instead of hanging wherever it was last flung.
+	var rel := ball - tip
+	var dist := rel.length()
+	if dist > 0.001:
+		ball_vel -= (rel / dist) * (Tuning.SWING_G * dist / Tuning.CHAIN) * dt
 
 	ball_vel = ball_vel.lerp(Vector2.ZERO, SimUtil.smooth(Tuning.BALL_DRAG, dt))
-
-	var before := ball
 	ball += ball_vel * dt
-
-	_pull_chain_taut(tip, tip_vel, dt)
-
-	# Reconcile the velocity with what actually happened, rather than keeping
-	# the velocity the forces asked for.
-	#
-	# This is the whole stability of the chain and it took a measurement to
-	# find: with the velocity left alone, the positional projection moves the
-	# ball every frame without that motion ever being accounted for, so energy
-	# is injected on every taut frame and it compounds. Measured peak ball
-	# speed was 212 m/s on a machine that cannot exceed 9.5 - and the symptom
-	# was not an error, it was a policy that crawled at a fifth throttle
-	# outscoring one that drove flat out, because the instability was doing all
-	# the damage. Deriving velocity from displacement makes that impossible by
-	# construction: the ball can only be moving as fast as it actually moved.
-	ball_vel = ((ball - before) / maxf(dt, 0.00001)).limit_length(Tuning.BALL_MAX_SPEED)
+	_pull_chain_taut(tip, tip_vel)
 
 
-## The chain, as a distance constraint. Pulled out into its own function
-## because it has to run in TWO places: after the ball moves, and again after a
-## collision has pushed the ball clear of whatever it hit.
+## The chain as a distance constraint, run in TWO places: after the ball moves,
+## and again after a collision has pushed the ball clear of whatever it hit.
 ##
 ## That second call is not tidiness. The push-out moves the ball along the line
-## away from the target with no regard for the chain, so a ball that hit
-## something at full stretch ended up beyond the chain's length - measured at
-## 5.43 against a chain of 5.2. A constraint that is only enforced in one of
-## the two places the position changes is not a constraint.
-func _pull_chain_taut(tip: Vector2, tip_vel: Vector2, dt: float) -> void:
+## away from the target with no regard for the chain, so a ball that connected
+## at full stretch ended up beyond the chain's length - measured at 5.43
+## against a chain of 5.2. A constraint enforced in only one of the two places
+## the position changes is not a constraint.
+func _pull_chain_taut(tip: Vector2, tip_vel: Vector2) -> void:
 	var rel := ball - tip
 	var dist := rel.length()
 	if dist <= Tuning.CHAIN or dist < 0.0001:
 		return
 	var n := rel / dist
 	ball = tip + n * Tuning.CHAIN
-	# A fraction of the outward speed is returned rather than absorbed, which
-	# is what makes a hard turn CRACK the ball out sideways instead of merely
-	# dragging it.
+	# Match the ball's radial velocity to the tip's, and touch nothing else.
+	# Both directions, unconditionally: pulling away has to DRAG the ball, and
+	# swinging outward has to stop at the chain's length. The tangential
+	# component is the momentum and is left exactly as it was.
 	var radial := (ball_vel - tip_vel).dot(n)
-	if radial > 0.0:
-		ball -= n * radial * Tuning.CHAIN_BOUNCE * dt
+	ball_vel -= n * radial
+	ball_vel = ball_vel.limit_length(Tuning.BALL_MAX_SPEED)
 
 
 # --- breaking things ------------------------------------------------------
@@ -487,13 +527,17 @@ func _land(kind: int, index: int, target: Dictionary, hit_speed: float, at: Vect
 	if away.length() > 0.001:
 		var n := away.normalized()
 		ball = at + n * (clearance + 0.02)
+		# Reflected off the face it struck, keeping most of the speed. A ball
+		# that stopped dead on every column would make a demolition a series of
+		# separate set-ups; one that comes off cleanly keeps the swing alive
+		# for the next one, which is the rhythm the game is actually about.
 		var into := ball_vel.dot(n)
 		if into < 0.0:
-			ball_vel -= n * into * (1.0 + Tuning.CHAIN_BOUNCE)
+			ball_vel -= n * into * 1.7
 		ball_vel = ball_vel.limit_length(Tuning.BALL_MAX_SPEED)
 		# And the chain still applies. Pushing the ball clear of what it hit
 		# can take it past the chain's length if it connected at full stretch.
-		_pull_chain_taut(boom_tip(), Vector2.ZERO, 1.0 / 60.0)
+		_pull_chain_taut(boom_tip(), Vector2.ZERO)
 
 	if damage <= 0.0:
 		return

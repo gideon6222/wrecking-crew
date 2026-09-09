@@ -86,23 +86,15 @@ static func _worker(s: Sim, mem: Dictionary, power: float, bolt: bool) -> void:
 	_head_toward(s, at + across, power)
 
 
-## Steer toward a point at a given throttle. Deliberately crude - a policy with
-## cleverness in it becomes a second thing that can change, and then a golden
-## failure means "the bot got better" as often as "the game changed".
+## Head for a point, through the same seam a thumb uses.
+##
+## It used to convert the goal into a throttle and a steer itself, which meant
+## the bots drove through a different door from the player - so a change to how
+## steering feels would not have shown up in any measurement. `drive_dir` takes
+## a direction in the world, which is exactly what a stick under a fixed camera
+## gives you, and the machine works out its own heading.
 static func _head_toward(s: Sim, goal: Vector2, power: float) -> void:
-	var to_goal := goal - s.pos
-	if to_goal.length() < 0.001:
-		s.drive(power, 0.0)
-		return
-	# Angle between where the machine points and where it wants to go, wrapped
-	# so a target behind it turns the short way round.
-	var want := atan2(to_goal.x, to_goal.y)
-	var err := wrapf(want - s.heading, -PI, PI)
-	var turn := clampf(err * 2.2, -1.0, 1.0)
-	# Ease off the throttle when the turn is hard, the way anyone drives - and
-	# it matters mechanically, because the turn rate falls away with speed.
-	var ease: float = 1.0 - 0.55 * clampf(absf(err) / PI, 0.0, 1.0)
-	s.drive(power * ease, turn)
+	s.drive_dir(goal - s.pos, power)
 
 
 static func _run_for_it(s: Sim) -> void:

@@ -47,6 +47,8 @@ const DRIVE_MAX := 9.5
 const DRIVE_DRAG := 2.4           ## per second, when the stick is released
 const DRIVE_REVERSE := 0.45       ## fraction of forward speed, going backwards
 
+## How fast the machine comes round to the direction the stick is pushed.
+##
 ## Turning is speed-dependent, the way a tracked machine turns - but only
 ## mildly, and that mildness is load bearing.
 ##
@@ -70,9 +72,14 @@ const STICK_DEADZONE := 0.14
 # momentum takes it, and the ONLY way to move it is to move the thing it is
 # attached to. That is the whole feel of the game: the vehicle is the wind-up.
 
-const BOOM_LEN := 4.6             ## turret to boom tip
+const BOOM_LEN := 3.6             ## turret to boom tip
 const BOOM_HEIGHT := 5.4
-const CHAIN := 5.2                ## boom tip to ball, and it does not stretch
+## Shorter than it was. At 5.2 on a 4.6 boom the ball reached nearly ten
+## metres from the machine and spent most of its time at full stretch, which is
+## what "it flies out too much" describes: a chain long enough that the taut
+## state is the normal state stops being a chain and becomes a rigid arm with a
+## hinge. Under eight metres of total reach it swings.
+const CHAIN := 4.2                ## boom tip to ball, and it does not stretch
 const BALL_RADIUS := 1.0
 
 ## A guard, not a mechanic. The chain is solved as a position constraint and a
@@ -82,19 +89,40 @@ const BALL_RADIUS := 1.0
 ## displacement so it cannot happen by construction, and this exists purely so
 ## that if it ever does, it fails loudly at a number a test can catch rather
 ## than quietly making a crawling policy the best one in the game.
-const BALL_MAX_SPEED := 34.0
+## Set ABOVE anything the machine can legitimately produce, so it never fires
+## in normal play and its firing is therefore a signal. At 34 it was clamping
+## during ordinary hard driving, which hides the very runaway it exists to
+## catch - a guard that is always on carries no information.
+const BALL_MAX_SPEED := 60.0
 
 const TURRET_MAX := 2.35          ## radians either side of straight ahead
 const TURRET_GAIN := 3.4
-const TURRET_SLEW := 1.7          ## radians per second
+## Slower than it was. A boom that slews at 1.7 rad/s on a 7.8-metre arm adds
+## 13 m/s to the ball on its own, which made the turret rather than the driving
+## the fastest way to build a swing - and the driving is meant to be the
+## wind-up. It also makes a slider control far less twitchy.
+const TURRET_SLEW := 1.15         ## radians per second
 const TURRET_RATE := 9.0
 
-## What the chain does when it goes taut. Some of the ball's outward speed is
-## returned rather than absorbed, which is what makes a hard turn crack the
-## ball out sideways instead of just dragging it.
-const CHAIN_BOUNCE := 0.22
-const BALL_DRAG := 0.55           ## per second, so a swing dies if left alone
-const BALL_SETTLE := 1.1          ## weak pull back under the tip
+## The restoring force, as an actual pendulum rather than a constant tug.
+##
+## It was a fixed-magnitude pull toward the boom tip, which is wrong in the way
+## that matters: a constant force does not care how far out the ball is, so
+## once the ball was out it stayed out. A real chain hanging in gravity pulls
+## back in proportion to how far it has swung, which is what gives a pendulum a
+## period at all - and a period is what makes a swing feel like a swing rather
+## than a ball being dragged around on a string.
+##
+## The horizontal restoring acceleration is `g * sin(angle)`, and for the range
+## that matters here `sin(angle)` is `offset / CHAIN`. So one line, and the
+## period falls out as `2*PI*sqrt(CHAIN/SWING_G)` - about 2.4 seconds, which is
+## a heavy weight on a long chain and reads as one.
+const SWING_G := 29.0
+
+## Low, and that is the fix for "it doesn't have enough momentum". Drag is the
+## only thing that should be taking speed out of the swing; at 0.55 a swing was
+## dead inside two seconds and every hit had to be set up from nothing.
+const BALL_DRAG := 0.16
 
 # --- breaking things ------------------------------------------------------
 
@@ -103,15 +131,20 @@ const BALL_SETTLE := 1.1          ## weak pull back under the tip
 ## That is the whole reason the chain is inextensible and the vehicle drives
 ## freely - both exist to let the player build speed.
 const HIT_MIN_SPEED := 3.2        ## below this the ball just clunks
-const HIT_FULL_SPEED := 13.0      ## at and above this, maximum damage
+const HIT_FULL_SPEED := 11.0      ## at and above this, maximum damage
 ## Per target, so a single pass through a column is a hit rather than one per
 ## frame - which would make damage a function of the frame rate, the one thing
 ## a golden cannot survive. Short enough that a slow orbit round one column
 ## lands several.
 const HIT_COOLDOWN := 0.16
 
-const COLUMN_HP := 40.0
-const WALL_HP := 24.0
+## Raised when the chain started carrying momentum properly. A column fell to
+## two hits and a whole basement went down in eight seconds - the demolition was
+## over before it was a demolition. Every improvement to how hard the ball hits
+## is a change to how long a room takes, and the two have to be re-balanced
+## together or the level loses its middle.
+const COLUMN_HP := 78.0
+const WALL_HP := 40.0
 const HIT_DAMAGE := 60.0          ## at HIT_FULL_SPEED
 
 ## What each thing was carrying. A column holds the slab up; a wall panel is

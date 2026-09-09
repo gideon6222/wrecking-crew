@@ -117,9 +117,28 @@ func test_the_stick_has_a_dead_zone(t: TestHarness) -> void:
 	t.lt(Tuning.STICK_DEADZONE, 0.35, "the dead zone is so wide that gentle steering is impossible")
 
 
-func test_the_chain_settles_but_does_not_snap_taut(t: TestHarness) -> void:
+func test_a_swing_carries_but_does_not_last_forever(t: TestHarness) -> void:
+	# Drag was 0.55 for one build and a swing was dead inside two seconds, so
+	# every hit had to be set up from nothing - "it doesn't have enough
+	# momentum". It still has to die eventually, or a ball flung once orbits
+	# for the rest of the level.
 	t.gt(Tuning.BALL_DRAG, 0.0, "a swung ball never slows, so it orbits forever")
-	t.lt(Tuning.BALL_DRAG, 3.0, "the ball stops so fast that a swing cannot be built")
-	t.gt(Tuning.CHAIN_BOUNCE, 0.0,
-		"the chain absorbs all the outward speed, so a hard turn drags rather than cracks")
-	t.lt(Tuning.CHAIN_BOUNCE, 0.9, "the chain returns almost everything, which is a spring not a chain")
+	t.lt(Tuning.BALL_DRAG, 0.35, "the swing dies so fast that every hit is set up from nothing")
+
+
+func test_the_chain_swings_like_a_pendulum(t: TestHarness) -> void:
+	# The restoring force is a real one - proportional to how far the ball has
+	# swung - so the chain has a PERIOD. A constant tug does not, which is why
+	# the ball used to stay wherever it was last flung: "it flies out too much".
+	var period := TAU * sqrt(Tuning.CHAIN / Tuning.SWING_G)
+	t.gt(period, 0.8, "the ball snaps back so fast it reads as a rubber band, not a chain")
+	t.lt(period, 4.0, "the swing is so slow that a pass at a column cannot be timed")
+
+
+func test_the_ball_cannot_reach_across_the_room(t: TestHarness) -> void:
+	# Total reach was 9.8 metres for one build, which is a quarter of the room -
+	# so the taut state was the normal state and the chain stopped reading as a
+	# chain. It still has to reach past the machine's own body.
+	var reach := Tuning.BOOM_LEN + Tuning.CHAIN
+	t.gt(reach, Tuning.RIG_RADIUS * 2.5, "the ball barely clears the machine it hangs off")
+	t.lt(reach, Tuning.BAY * 1.1, "the ball reaches more than a whole bay - it is an arm, not a chain")
