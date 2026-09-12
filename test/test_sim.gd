@@ -192,6 +192,29 @@ func test_the_chain_never_stretches(t: TestHarness) -> void:
 			"the chain stretched past its length")
 
 
+## How long the adversarial drive below runs before its envelope is read.
+##
+## Four minutes, because the envelope has to be REACHED before it can be
+## bounded. The slowest of the eight configurations measured - both of the
+## level-one spawns, across levels 1 to 4 - is still climbing at two minutes and
+## arrives at three. This leaves a minute of cushion. A ceiling asserted over
+## the 60 s the old version ran, where the trace peaks at 34, bounds nothing.
+const CHAIN_RUN_SECONDS := 240.0
+
+## The ceiling on the swing's envelope.
+##
+## PROVISIONAL: derived from a Python reimplementation of the simulation rather
+## than from a real run, and to be re-recorded from the number this test prints.
+## That reimplementation reproduces the engine exactly over a minute, but four
+## minutes of chaotic float arithmetic is not a thing to stake a constant on.
+##
+## 52.0 is about 17% above the worst correct observation across those eight
+## configurations (44.22 m/s) and about 13% below the restitution regression
+## that pegs the clamp - so it separates the one fault there is evidence for,
+## with room for a level nobody has measured yet.
+const CHAIN_ENVELOPE_CEILING := 52.0
+
+
 func test_the_chain_does_not_invent_energy(t: TestHarness) -> void:
 	# THE test for this game's physics, and it exists because the constraint did
 	# exactly that. Solving a distance constraint by moving the ball and leaving
@@ -200,33 +223,63 @@ func test_the_chain_does_not_invent_energy(t: TestHarness) -> void:
 	# The symptom was not an error - it was a policy that crawled at a fifth
 	# throttle outscoring one that drove flat out.
 	#
-	# What this asserts is SATURATION, not a ceiling. An earlier version of this
-	# test computed a hand-derived bound from the machine's top speed and its
-	# rotation rates, and failed - correctly, but for the wrong reason: driving
-	# a pendulum near its own period PUMPS it, so the speed legitimately climbs
-	# well past anything the machine can produce in one push. That is resonance,
-	# not a bug, and the honest distinction is whether it converges.
+	# WHAT THIS BOUNDS AND WHAT IT DOES NOT. Read this before trusting it.
 	#
-	# So: drive adversarially for a full minute and compare the worst of the
-	# second half against the worst of the first. Real damping settles to a
-	# steady state; an energy leak grows without bound.
+	# It asserts a CEILING on the swing's envelope. It does NOT detect a subtle
+	# leak, and it cannot: `_pull_chain_taut` ends in `limit_length(
+	# BALL_MAX_SPEED)`, so a runaway never grows without bound - it pegs at the
+	# clamp. Measured, under the adversarial drive below:
+	#
+	#   correct                             settles at ~44 m/s
+	#   radial correction applied at 1.6    settles at ~45 m/s   NOT caught
+	#   impact restitution 1.7 -> 2.6       pegs the clamp       caught at once
+	#
+	# So this is a guard against a gross runaway, not a proof of conservation.
+	# Nobody should read a green result here as the constraint being sound.
+	#
+	# WHY IT IS NOT A RATIO ANY MORE. It used to take the worst ball speed of the
+	# second half-minute over the worst of the first and require under 1.15. That
+	# read as a saturation test and was really a sampling artefact. The envelope
+	# is a chaotic trace oscillating between 32 and 44 m/s, and two 30-second
+	# maxima drawn from it agree within 15% only about three times in four -
+	# slid across a twenty-minute trace, that assertion FAILED at 25% of window
+	# positions on one level-one spawn and 22% on the other. It had been a coin
+	# flip on both, and a two-metre change to where level one spawns was enough
+	# to reseed it into the red. It was never the runaway detector its own
+	# comment claimed; the clamp check was.
+	#
+	# Lengthening the window does not rescue it. A maximum is an extreme-value
+	# statistic and converges far too slowly to carry a 15% tolerance: the worst
+	# case is still 1.22 with three-minute halves.
 	var s := Sim.new()
-	var early := 0.0
-	var late := 0.0
-	var half := int(round(30.0 / STEP))
-	for i in half * 2:
+	var peak := 0.0
+	var peak_at := 0.0
+	# Tracked every frame but asserted once. The old shape put the clamp check
+	# inside the loop, which spent 3,600 of the suite's assertions restating one
+	# fact; the peak carries the same coverage in three.
+	for i in int(round(CHAIN_RUN_SECONDS / STEP)):
 		s.drive(1.0, sin(s.time * 2.3))
 		s.aim_to(sin(s.time * 1.1) * Tuning.TURRET_MAX)
 		s.advance(STEP)
-		if i < half:
-			early = maxf(early, s.ball_speed())
-		else:
-			late = maxf(late, s.ball_speed())
-		t.lt(s.ball_speed(), Tuning.BALL_MAX_SPEED - 0.001,
-			"the emergency clamp is firing during ordinary driving, so it cannot signal a runaway")
-	t.gt(early, 1.0, "the adversarial drive never got the ball moving at all")
-	t.lt(late, early * 1.15,
-		"the swing is still gaining energy after a minute - the constraint is leaking")
+		if s.ball_speed() > peak:
+			peak = s.ball_speed()
+			peak_at = s.time
+
+	# Printed on every run, passing or failing, because a ceiling whose headroom
+	# nobody can see is a ceiling that rots quietly while the game is tuned around
+	# it. This is also the number CHAIN_ENVELOPE_CEILING is to be re-recorded from.
+	print("  chain envelope: peak %.2f m/s at %.1f s over %.0f s (ceiling %.1f, clamp %.1f, headroom %.0f%%)"
+		% [peak, peak_at, CHAIN_RUN_SECONDS, CHAIN_ENVELOPE_CEILING,
+			Tuning.BALL_MAX_SPEED, 100.0 * (CHAIN_ENVELOPE_CEILING / maxf(peak, 0.001) - 1.0)])
+
+	# A ceiling passes trivially on a ball that never moves.
+	t.gt(peak, 1.0,
+		"the adversarial drive never got the ball moving at all, so the ceiling below is vacuous")
+	t.lt(peak, Tuning.BALL_MAX_SPEED - 0.001,
+		"the emergency clamp fired during ordinary driving, so it can no longer signal a runaway")
+	t.lt(peak, CHAIN_ENVELOPE_CEILING,
+		"the swing carried %.2f m/s, well past the envelope a correct chain settles at - the constraint is feeding it"
+			% peak)
 
 
 func test_driving_is_what_moves_the_ball(t: TestHarness) -> void:
