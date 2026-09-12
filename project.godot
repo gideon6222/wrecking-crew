@@ -16,6 +16,15 @@ run/main_scene="res://src/game/main.tscn"
 config/features=PackedStringArray("4.7", "Mobile")
 config/icon="res://icon.svg"
 
+[autoload]
+
+; Records and replays touch input for filmed runs (scripts/movie.ps1). Inert
+; without a user arg - it reads OS.get_cmdline_user_args() in _ready and sets
+; physics processing off unless `replay=` was passed. Registered here because
+; the script alone does nothing: an autoload that is not in this file is a tool
+; that can never run, which is the fault the audit found in rects.gd.
+ReplayPlayer="*res://scripts/replay_player.gd"
+
 [display]
 
 window/size/viewport_width=1080
