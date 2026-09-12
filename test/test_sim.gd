@@ -203,10 +203,11 @@ const CHAIN_RUN_SECONDS := 240.0
 
 ## The ceiling on the swing's envelope.
 ##
-## PROVISIONAL: derived from a Python reimplementation of the simulation rather
-## than from a real run, and to be re-recorded from the number this test prints.
-## That reimplementation reproduces the engine exactly over a minute, but four
-## minutes of chaotic float arithmetic is not a thing to stake a constant on.
+## RECORDED from a real run, 2026-09-12: peak 43.49 m/s at 100.5 s over 240 s,
+## level 1. It was first derived from a Python reimplementation, which predicted
+## 43.49 for the same run - agreeing to the hundredth over four minutes of
+## chaotic float arithmetic, which is why the rest of that port's numbers below
+## are quoted with confidence.
 ##
 ## 52.0 is about 17% above the worst correct observation across those eight
 ## configurations (44.22 m/s) and about 13% below the restitution regression
