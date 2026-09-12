@@ -16,11 +16,24 @@ extends SceneTree
 var _main
 var _frames := 0
 var _seconds := 12.0
+var _tag := ""
 
 
+## The documented form is `-- 45 <state>`, and the old parser was
+##   for a in OS.get_cmdline_user_args(): _seconds = float(a)
+## which assigned EVERY user argument to `_seconds`. `float("<state>")` is 0.0,
+## so the two-argument form photographed the TITLE FRAME and still exited 0 with
+## a plausible-looking PNG. First numeric argument is the seconds, first
+## non-numeric one is the state/tag - the same split stillwater's shot.gd makes.
 func _initialize() -> void:
+	var got_seconds := false
 	for a in OS.get_cmdline_user_args():
-		_seconds = float(a)
+		if a.is_valid_float():
+			if not got_seconds:
+				_seconds = float(a)
+				got_seconds = true
+		elif _tag == "":
+			_tag = String(a)
 
 	var scene: PackedScene = load("res://src/game/main.tscn")
 	_main = scene.instantiate()
@@ -45,8 +58,9 @@ func _process(_delta: float) -> bool:
 	if _frames < 5:
 		return false
 	var img := root.get_texture().get_image()
-	img.save_png("user://shot.png")
-	print("wrote %s/shot.png at t=%.1fs  rubble=%d  cols=%d"
-		% [OS.get_user_data_dir(), _seconds, _main.sim.rubble, _main.sim.columns_down])
+	var out := "shot" if _tag == "" else "shot_" + _tag
+	img.save_png("user://%s.png" % out)
+	print("wrote %s/%s.png at t=%.1fs  rubble=%d  cols=%d"
+		% [OS.get_user_data_dir(), out, _seconds, _main.sim.rubble, _main.sim.columns_down])
 	quit(0)
 	return true
