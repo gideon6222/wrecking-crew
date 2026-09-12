@@ -28,15 +28,23 @@ extends RefCounted
 ## exactly like a machine sliding left on purpose. **The one thing no bot in
 ## this studio does is hold a thumb.** This file holds one.
 ##
-## **What it does NOT do.** It never adds the scene to a tree, so it never calls
-## `get_viewport()` and never asks whether a node added during
-## `SceneTree._initialize()` is inside the tree - a question two files in the
-## knowledge base currently answer differently, and a gate that turns red on an
-## unsettled engine fact is a gate nobody will trust. The events therefore go
-## through `Main.stick_event()` and `Main.slew_event()`, which are the whole of
-## `_on_stick_input` and `_on_slew_input` except the `accept_event()` call that
-## needs a viewport. Everything below is arithmetic on objects that exist
-## without a tree.
+## **It drives `_on_stick_input` and `_on_slew_input` themselves** - the exact
+## functions the `gui_input` signal calls - and not `_read_stick`, `_read_slew`,
+## `aim_to` or `drive_dir` underneath them. Anything below those handlers takes
+## a value already in the game's own coordinates and applies it correctly on a
+## mirrored game exactly as on a correct one.
+##
+## **And it never adds the scene to a tree**, so it never calls
+## `get_viewport()`, never processes a frame and never asks whether a node added
+## during `SceneTree._initialize()` is inside the tree - a question two files in
+## the knowledge base currently answer differently, and a gate that turns red on
+## an unsettled engine fact is a gate nobody will trust. The one thing those
+## handlers do that looks like it needs a viewport is `accept_event()`, and it
+## does not: `Control::accept_event()` is wrapped in `if (is_inside_tree())` in
+## every Godot 4 branch (checked against 4.3, 4.4, 4.5 and master), so outside
+## the tree it is a silent no-op - not an error, not a warning, nothing in the
+## log. That is what lets the real handler run here unchanged. Everything below
+## is arithmetic on objects that exist without a tree.
 
 
 const STEP := 1.0 / 60.0
@@ -86,13 +94,13 @@ func _hold_stick(main, side: float) -> void:
 	down.index = 0
 	down.pressed = true
 	down.position = Vector2(r, r)
-	main.stick_event(down)
+	main._on_stick_input(down)
 	for i in int(round(HOLD / STEP)):
 		var drag := InputEventScreenDrag.new()
 		drag.index = 0
 		drag.position = Vector2(r + side * r * PUSH, r)
 		drag.relative = Vector2(side * r * PUSH, 0.0)
-		main.stick_event(drag)
+		main._on_stick_input(drag)
 		main.advance(STEP, STEP)
 
 
@@ -130,10 +138,10 @@ func test_the_scene_is_the_game_this_file_thinks_it_is(t: TestHarness) -> void:
 		return
 	var main = scene.instantiate()
 	t.ok(main.has_method("freeze"), "main.tscn did not load its script - read the parse error ABOVE this line")
-	t.ok(main.has_method("stick_event"),
-		"Main.stick_event is gone, so nothing below drives the real stick handler")
-	t.ok(main.has_method("slew_event"),
-		"Main.slew_event is gone, so nothing below drives the real slew handler")
+	t.ok(main.has_method("_on_stick_input"),
+		"Main._on_stick_input is gone, so nothing below drives the real stick handler")
+	t.ok(main.has_method("_on_slew_input"),
+		"Main._on_slew_input is gone, so nothing below drives the real slew handler")
 	main.free()
 
 
@@ -221,7 +229,7 @@ func test_the_slew_slider_swings_the_boom_the_way_the_thumb_went(t: TestHarness)
 	down.index = 0
 	down.pressed = true
 	down.position = Vector2(w * 0.5, mid)
-	main.slew_event(down)
+	main._on_slew_input(down)
 
 	_slew_to(main, w * 0.86, mid)
 	# Long enough for the boom to actually get there: the slew is rate-limited to
@@ -248,7 +256,7 @@ func _slew_to(main, x: float, mid: float) -> void:
 	drag.index = 0
 	drag.position = Vector2(x, mid)
 	drag.relative = Vector2(0.0, 0.0)
-	main.slew_event(drag)
+	main._on_slew_input(drag)
 
 
 ## Where the boom tip is in the world, through the same conversion the scene
@@ -272,13 +280,13 @@ func test_a_thumb_that_does_not_move_moves_nothing(t: TestHarness) -> void:
 	down.index = 0
 	down.pressed = true
 	down.position = Vector2(r, r)
-	main.stick_event(down)
+	main._on_stick_input(down)
 	for i in int(round(HOLD / STEP)):
 		var drag := InputEventScreenDrag.new()
 		drag.index = 0
 		drag.position = Vector2(r, r)
 		drag.relative = Vector2.ZERO
-		main.stick_event(drag)
+		main._on_stick_input(drag)
 		main.advance(STEP, STEP)
 
 	t.approx(main._rig.position.distance_to(from), 0.0, 0.01,
@@ -290,8 +298,13 @@ func test_a_thumb_that_does_not_move_moves_nothing(t: TestHarness) -> void:
 	var key := InputEventKey.new()
 	key.keycode = KEY_A
 	key.pressed = true
-	t.eq(main.stick_event(key), false, "the drive stick consumed a key press")
-	t.eq(main.slew_event(key), false, "the slew slider consumed a key press")
+	main._on_stick_input(key)
+	main._on_slew_input(key)
+	var turret_before: float = main.sim.turret_target
+	main.advance(0.5, STEP)
 	t.approx(main._rig.position.distance_to(from), 0.0, 0.01,
-		"a key press moved the machine")
+		"a key press through the stick handler moved the machine %.3f m - the type checks in it have stopped discriminating"
+			% main._rig.position.distance_to(from))
+	t.approx(main.sim.turret_target, turret_before, 0.0001,
+		"a key press through the slew handler re-aimed the boom")
 	main.free()

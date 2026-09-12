@@ -619,37 +619,27 @@ func _draw_slew() -> void:
 	_slew.draw_circle(at, 11.0, Color(0.92, 0.86, 0.72, 0.95))
 
 
+## The thumb, for the boom. `test/test_controls.gd` drives THIS function with a
+## real `InputEventScreenDrag`, rather than calling `_read_slew` or `sim.aim_to`
+## underneath it: `aim_to` takes a bearing and aims the boom there correctly on
+## a mirrored game exactly as on a correct one, so a test that starts below here
+## has no coverage of which way the thumb went.
+##
+## `accept_event()` is safe off the tree - `Control::accept_event()` is guarded
+## by `is_inside_tree()` in every Godot 4 branch and is a silent no-op outside
+## it - which is what lets the gate run in the headless suite with no viewport.
 func _on_slew_input(event: InputEvent) -> void:
-	if slew_event(event):
-		_slew.accept_event()
-
-
-## The half of `_on_slew_input` that is not `accept_event()`, split out so a
-## test can drive it.
-##
-## `accept_event()` needs a live viewport and a headless suite has no reliable
-## one at the moment it runs, so a test that called `_on_slew_input` would be
-## betting the gate on an engine detail that has nothing to do with the game.
-## Everything about the gesture - reading the position off a real event, the
-## sign, the scale, the clamp inside `aim_to` - lives here, where a test hands
-## it a real `InputEventScreenDrag` and asserts which way the boom went ON
-## SCREEN. See `test/test_controls.gd`.
-##
-## Returns whether the event was consumed, which is exactly what decides
-## whether the caller accepts it - so the split cannot change behaviour.
-func slew_event(event: InputEvent) -> bool:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
 			_slew_grab = event.index if event is InputEventScreenTouch else 0
 			_read_slew(event.position)
 		else:
 			_slew_grab = -1
-		return true
+		_slew.accept_event()
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _slew_grab >= 0:
 			_read_slew(event.position)
-			return true
-	return false
+			_slew.accept_event()
 
 
 ## Absolute: where the thumb is along the track IS where the boom is asked to
@@ -661,14 +651,8 @@ func _read_slew(local: Vector2) -> void:
 	sim.aim_to(t * Tuning.TURRET_MAX)
 
 
-func _on_stick_input(event: InputEvent) -> void:
-	if stick_event(event):
-		_stick.accept_event()
-
-
-## The half of `_on_stick_input` that is not `accept_event()`, split out for the
-## same reason as `slew_event` above: so `test/test_controls.gd` can hand the
-## drive stick a real `InputEventScreenDrag` with no viewport in the room.
+## The thumb, for the machine. `test/test_controls.gd` drives THIS function with
+## a real `InputEventScreenDrag`.
 ##
 ## **A test that calls `sim.drive_dir()` instead is not a test of the control.**
 ## `drive_dir` takes a world bearing and drives the machine there correctly,
@@ -676,7 +660,7 @@ func _on_stick_input(event: InputEvent) -> void:
 ## either side of it, in `_read_stick` turning a thumb into a bearing and in the
 ## camera turning a world X into a screen X. Every policy in `test/policies.gd`
 ## drives `drive_dir`, which is why none of them can see it.
-func stick_event(event: InputEvent) -> bool:
+func _on_stick_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
 			_stick_grab = event.index if event is InputEventScreenTouch else 0
@@ -685,12 +669,11 @@ func stick_event(event: InputEvent) -> bool:
 			_stick_grab = -1
 			_stick_vec = Vector2.ZERO
 			sim.drive_dir(Vector2.ZERO, 0.0)
-		return true
+		_stick.accept_event()
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _stick_grab >= 0:
 			_read_stick(event.position)
-			return true
-	return false
+			_stick.accept_event()
 
 
 ## The stick says WHERE ON SCREEN to go, not what to do with the tracks.
