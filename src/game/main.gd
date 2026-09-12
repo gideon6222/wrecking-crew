@@ -620,17 +620,36 @@ func _draw_slew() -> void:
 
 
 func _on_slew_input(event: InputEvent) -> void:
+	if slew_event(event):
+		_slew.accept_event()
+
+
+## The half of `_on_slew_input` that is not `accept_event()`, split out so a
+## test can drive it.
+##
+## `accept_event()` needs a live viewport and a headless suite has no reliable
+## one at the moment it runs, so a test that called `_on_slew_input` would be
+## betting the gate on an engine detail that has nothing to do with the game.
+## Everything about the gesture - reading the position off a real event, the
+## sign, the scale, the clamp inside `aim_to` - lives here, where a test hands
+## it a real `InputEventScreenDrag` and asserts which way the boom went ON
+## SCREEN. See `test/test_controls.gd`.
+##
+## Returns whether the event was consumed, which is exactly what decides
+## whether the caller accepts it - so the split cannot change behaviour.
+func slew_event(event: InputEvent) -> bool:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
 			_slew_grab = event.index if event is InputEventScreenTouch else 0
 			_read_slew(event.position)
 		else:
 			_slew_grab = -1
-		_slew.accept_event()
+		return true
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _slew_grab >= 0:
 			_read_slew(event.position)
-			_slew.accept_event()
+			return true
+	return false
 
 
 ## Absolute: where the thumb is along the track IS where the boom is asked to
@@ -643,6 +662,21 @@ func _read_slew(local: Vector2) -> void:
 
 
 func _on_stick_input(event: InputEvent) -> void:
+	if stick_event(event):
+		_stick.accept_event()
+
+
+## The half of `_on_stick_input` that is not `accept_event()`, split out for the
+## same reason as `slew_event` above: so `test/test_controls.gd` can hand the
+## drive stick a real `InputEventScreenDrag` with no viewport in the room.
+##
+## **A test that calls `sim.drive_dir()` instead is not a test of the control.**
+## `drive_dir` takes a world bearing and drives the machine there correctly,
+## including on a game whose stick is mirrored - the bug lives in the two steps
+## either side of it, in `_read_stick` turning a thumb into a bearing and in the
+## camera turning a world X into a screen X. Every policy in `test/policies.gd`
+## drives `drive_dir`, which is why none of them can see it.
+func stick_event(event: InputEvent) -> bool:
 	if event is InputEventScreenTouch or event is InputEventMouseButton:
 		if event.pressed:
 			_stick_grab = event.index if event is InputEventScreenTouch else 0
@@ -651,11 +685,12 @@ func _on_stick_input(event: InputEvent) -> void:
 			_stick_grab = -1
 			_stick_vec = Vector2.ZERO
 			sim.drive_dir(Vector2.ZERO, 0.0)
-		_stick.accept_event()
+		return true
 	elif event is InputEventScreenDrag or event is InputEventMouseMotion:
 		if _stick_grab >= 0:
 			_read_stick(event.position)
-			_stick.accept_event()
+			return true
+	return false
 
 
 ## The stick says WHERE ON SCREEN to go, not what to do with the tracks.

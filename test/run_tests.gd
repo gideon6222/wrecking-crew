@@ -4,10 +4,16 @@ extends SceneTree
 ##
 ##   godot --headless --script res://test/run_tests.gd
 ##
-## Nothing loaded here touches a Node, a viewport or an input event, so this
-## runs in a container with no GPU and no display in about a second. The scene
-## is exercised separately by run_smoke.gd, which is slower and catches a
+## Almost nothing loaded here touches a Node, a viewport or an input event, so
+## this runs in a container with no GPU and no display in about a second. The
+## scene is exercised separately by run_smoke.gd, which is slower and catches a
 ## different class of bug.
+##
+## The one deliberate exception is `test_controls.gd`, whose subject IS the
+## wiring between a thumb and the simulation. It instantiates the scene and
+## drives a real input event through the real handler, but it never adds
+## anything to a tree and never opens a viewport, so it still runs here in
+## milliseconds. See its header for why that boundary is exactly where it is.
 ##
 ## **The suite list is a glob, not a hand-written array.** A hand-maintained
 ## list is a second place to remember, and this studio has already paid for
