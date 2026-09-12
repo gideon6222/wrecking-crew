@@ -52,8 +52,9 @@ const STEP := 1.0 / 60.0
 ## How long a thumb is held over. The machine PIVOTS before it drives - that is
 ## the whole point of the alignment cone - so a flick that only lasts a few
 ## frames measures the pivot and never reaches the part where the machine goes
-## anywhere. Two seconds is comfortably past the pivot and still far short of
-## the deck's side wall, which is 17.5 m from the spawn.
+## anywhere. Two seconds is comfortably past the pivot, and carries the machine
+## about eleven metres - well short of the floor `_place` leaves on either side
+## of it, which `_room_both_ways` asserts rather than assuming.
 const HOLD := 2.0
 
 ## How far over the stick is pushed, as a fraction of its radius. Well past the
@@ -79,6 +80,58 @@ func _game():
 	var main = scene.instantiate()
 	main.freeze(1)
 	return main
+
+
+## Stand the machine in the middle of the deck's width before the thumb goes
+## down, so the two cases below measure the CONTROL and not the room.
+##
+## This file used to drive from wherever `freeze(1)` happened to leave the
+## machine, and that was an unstated precondition rather than a setup. On level
+## one it was false: `Sim._clear_spawn_x` scored a candidate spawn on its
+## distance from the columns and the infill panels and never looked at the
+## perimeter, so it chose the far end of its own search range and the machine
+## started hard against the left-hand wall, exactly where `_clamp_to_deck` pins
+## it. The left-hand case below then measured a machine that could not move left
+## AT ALL, reported 0.00 m of travel, and said the driving controls were
+## INVERTED. They were not. The spawn was.
+##
+## That is the failure mode this whole file exists to refuse, arriving from the
+## other direction: a red gate with a wrong explanation attached is how an
+## assertion gets loosened, and loosening one here is how this studio ships
+## inverted controls a seventh time. So the gate now puts the machine somewhere
+## it can drive both ways, and says so out loud.
+##
+## The x is the middle of the room. The z is the depth the machine spawns at, so
+## this is a pose the game itself puts the player in rather than one invented
+## for a test - and on every other level it is the spawn.
+##
+## The chain is re-hung too. Moving `pos` on its own leaves the ball across the
+## room; the constraint would snap it taut on the first frame and fling it
+## through the level. These are the same three assignments `Sim._build_deck`
+## makes once it has picked a spawn, for the same reason.
+func _place(main) -> void:
+	main.sim.pos = Vector2(0.0, Tuning.ramp_z() + 2.2)
+	main.sim._prev_tip = main.sim.boom_tip()
+	main.sim.ball = main.sim._prev_tip
+	main.sim.ball_vel = Vector2.ZERO
+	# So `_rig` and the camera are where the sim now says, before anything is
+	# measured from them.
+	main._sync()
+
+
+## The precondition the two handedness cases stand on, asserted instead of
+## assumed - and it is the assertion whose absence let a spawn bug spend a day
+## looking like inverted controls.
+##
+## `TRAVELLED` is the floor under "it actually went somewhere", so the machine
+## needs at least that much clear floor on the NEARER side of it. Below that a
+## perimeter wall decides what the assertions read, and a wall reads the same as
+## a control that does nothing.
+func _room_both_ways(t: TestHarness, main) -> void:
+	var clear_floor: float = Tuning.DECK_W * 0.5 - absf(main.sim.pos.x) - Tuning.RIG_RADIUS
+	t.gt(clear_floor, TRAVELLED,
+		"the machine is set up %.2f m from a perimeter wall, so a thumb held that way measures the WALL rather than the control - the assertions below cannot mean what they say"
+			% clear_floor)
 
 
 ## Hold a thumb on the drive stick, off to one side, for `HOLD` seconds.
@@ -147,6 +200,8 @@ func test_the_scene_is_the_game_this_file_thinks_it_is(t: TestHarness) -> void:
 
 func test_a_thumb_to_the_right_of_the_stick_drives_the_machine_right_on_screen(t: TestHarness) -> void:
 	var main = _game()
+	_place(main)
+	_room_both_ways(t, main)
 	var from: Vector3 = main._rig.position
 	var room_before := _screen_x(main, Vector3.ZERO)
 	_hold_stick(main, 1.0)
@@ -172,6 +227,8 @@ func test_a_thumb_to_the_left_mirrors_it(t: TestHarness) -> void:
 	# sign of the push. A single-direction test passes on a control that is
 	# stuck to one side, and on one that always drives toward the ramp.
 	var main = _game()
+	_place(main)
+	_room_both_ways(t, main)
 	var from: Vector3 = main._rig.position
 	var room_before := _screen_x(main, Vector3.ZERO)
 	_hold_stick(main, -1.0)

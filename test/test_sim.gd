@@ -44,6 +44,26 @@ func test_the_spawn_is_clear_of_everything(t: TestHarness) -> void:
 			t.gt(Sim._distance_to_segment(s.ball, w.a, w.b), Tuning.BALL_RADIUS + Tuning.WALL_THICK,
 				"level %d spawns the ball inside a wall panel" % level)
 
+		# And clear of THE ROOM ITSELF, which is in neither loop above: `walls`
+		# holds the infill panels and nothing else, so nothing here had ever
+		# looked at the perimeter. `_clear_spawn_x` had not looked at it either,
+		# and on level one it therefore picked the far end of its own search
+		# range - `DECK_W * 0.5 - RIG_RADIUS`, the exact value `_clamp_to_deck`
+		# pins the machine at. Every assertion above passed: the machine was
+		# clear of every column and every panel. It was simply against a wall,
+		# so the player started that basement unable to drive left AT ALL, and
+		# the only thing that ever said so was a handedness test reading 0.00 m
+		# of travel and calling the driving controls inverted.
+		#
+		# The bar is the machine's own radius: half a machine's width of floor
+		# to set off into, on whichever side is nearer. Less than that is not a
+		# spawn, it is a parking space. A spawn flush against the wall measures
+		# 0.00 here, which is what this caught.
+		var clear_floor := Tuning.DECK_W * 0.5 - absf(s.pos.x) - Tuning.RIG_RADIUS
+		t.gt(clear_floor, Tuning.RIG_RADIUS,
+			"level %d spawns the machine %.2f m clear of the side wall - it starts pinned and cannot drive that way"
+				% [level, clear_floor])
+
 
 func test_the_throttle_sets_a_speed_not_an_acceleration(t: TestHarness) -> void:
 	# It accumulated acceleration for one build, so a fifth of throttle still

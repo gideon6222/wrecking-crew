@@ -186,6 +186,28 @@ func _clear_spawn_x() -> float:
 		for w in walls:
 			gap = minf(gap, _distance_to_segment(here, w.a, w.b) - Tuning.WALL_THICK - Tuning.RIG_RADIUS)
 			gap = minf(gap, _distance_to_segment(tip, w.a, w.b) - Tuning.WALL_THICK - Tuning.BALL_RADIUS)
+		# And the PERIMETER, which is in neither array. `walls` holds the
+		# infill panels and nothing else, so every line above this one read
+		# the edge of the room as open floor - the gap went on GROWING the
+		# nearer the scan looked to a wall it could not pass. On level one,
+		# whose front row is fully panelled, that made the widest gap in the
+		# room the far end of the search range: `DECK_W * 0.5 - RIG_RADIUS`,
+		# which is the exact value `_clamp_to_deck` pins the machine at. The
+		# player began the first basement welded to the left-hand wall,
+		# unable to drive left at all.
+		#
+		# Nothing failed over it, because every policy in the suite drives at
+		# columns and the columns were all to the right. The one thing that
+		# noticed was `test_controls.gd` reading 0.00 m on a thumb held left,
+		# which looks exactly like inverted controls and is not.
+		#
+		# Written in the same shape as the two loops - a distance, less what
+		# each body needs to fit - so the perimeter is an obstacle like any
+		# other rather than a special case. The SIDE walls only: `z` is fixed
+		# for the whole scan, so a front or back term would be the same
+		# constant at every `x` and could not change which one wins.
+		gap = minf(gap, Tuning.DECK_W * 0.5 - absf(here.x) - Tuning.RIG_RADIUS)
+		gap = minf(gap, Tuning.DECK_W * 0.5 - absf(tip.x) - Tuning.BALL_RADIUS)
 		# Prefer a spot near the ramp so the player starts by the way out.
 		var score: float = gap - absf(x) * 0.05
 		if score > best_gap:
